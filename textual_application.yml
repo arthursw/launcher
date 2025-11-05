@@ -1,0 +1,12 @@
+name: textualapp
+api: https://api.github.com/
+tags_endpoint: /repos/textualize/textual/tags
+archive_endpoint: /repos/textualize/textual/zipball/{ref}
+main: examples/pride.py
+path: ./apps
+version: textualapp-v0.80.1
+auto_update: true
+project: textualize/textual
+configuration: pyproject.toml
+timeout: 3
+proxy_servers: null

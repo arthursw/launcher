@@ -1,0 +1,12 @@
+name: BioImageIT
+api: https://gitlab.inria.fr/api/v4/
+tags_endpoint: projects/54065/repository/tags
+archive_endpoint: projects/54065/repository/archive.zip
+main: pyflow.py
+path: ./apps
+version: BioImageIT-v0.3.30
+auto_update: true
+project: 54065
+configuration: pyproject.toml
+timeout: 3
+proxy_servers: null
