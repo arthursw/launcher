@@ -10,20 +10,57 @@ With this launcher, it will be extremely easy for a developper to ship his app: 
 The `application.yml` will look as follow:
 ```yaml
 name: ExampleApp                                                         # The name of the application (used for the environment name)
-api: https://api.github.com/                                             # The API URL to get tags and sources (could be something like `https://gitlab.inria.fr/api/v4/`)
-tags_endpoint: /repos/owner/exampleapp/git/tags                          # The API endpoint to get the list of tags (`projects/{projectId}/repository/tags` on Gitlab)
-archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive  (`projects/{projectId}/repository/archive.zip` on Gitlab)
+repository: git@github.com:owner/exampleapp.git                          # The git repository URL (optional if api, tags_endpoint, and archive_endpoint are provided)
+api: https://api.github.com/                                             # The API URL to get tags and sources (optional if repository is provided)
+tags_endpoint: /repos/owner/exampleapp/git/tags                          # The API endpoint to get the list of tags (optional if repository is provided)
+archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py                                                            # The main script to execute in the sources
 path: "."                                                                # The directory in which to extract the sources (could be "~/Applications/")
 version: exampleapp-v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
-project: exampleapp                                                      # The project id (on Gitlab) or name (on Github)
-configuration: pyproject.toml                                            # The configuration file to look for the dependencies
+configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
+install: run.sh                                                          # The install script with additional install commands
 timeout: 3                                                               # The time before opening the GUI which displays what's happening
 proxy_servers:                                                           # The proxy settings to use if behind a proxy (undefined by default, and set by the user if necessary)
   http: http://username:password@corp.com:8080
   https: https://username:password@corp.com:8080
-gui: qt                                                                  # The gui framework to use, can be Textual, Qt, Tkinter or none (console)
+```
+
+### Repository Attribute
+
+The `repository` attribute allows simplifying configuration by automatically inferring the API endpoints. Instead of specifying `api`, `tags_endpoint`, and `archive_endpoint` separately, you can provide a single `repository` attribute:
+
+- The launcher will parse the repository URL and infer the API endpoints for GitHub, GitLab, or generic git hosts
+- Supported formats:
+  - SSH: `git@github.com:owner/repo.git`
+  - HTTPS: `https://github.com/owner/repo.git`
+  - The `.git` suffix is optional
+
+- If both `repository` and explicit endpoints are provided, the explicit endpoints take priority
+
+Examples:
+
+**GitHub (simplified)**
+```yaml
+name: MyApp
+repository: git@github.com:myorg/myapp.git
+main: main.py
+path: "."
+version: myapp-v1.0.0
+auto_update: true
+configuration: pyproject.toml
+```
+
+**GitLab on-premise with override**
+```yaml
+name: MyApp
+repository: git@gitlab.inria.fr:myorg/myapp.git
+api: https://my-custom-api.com/  # Overrides the inferred GitLab API
+main: main.py
+path: "."
+version: myapp-v1.0.0
+auto_update: true
+configuration: pyproject.toml
 ```
 
 
@@ -34,7 +71,8 @@ This launcher will:
 - check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
 - if the sources exist, create an environment if necessary and execute the main script: 
   - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
-  - if the environment does not exists: create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`)
+  - if the environment does not exists: create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a pixi.toml, environment.yml or requirements.txt file.)
+  - run the install script defined by the `install` attribute if any
   - run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
 - otherwise: download them from the `archive_endpoint` and extract them in the `path`
 - update `application.yml` to set the current version in `version`
@@ -59,6 +97,9 @@ environmentManager = EnvironmentManager("micromamba/")
 #   micromamba --rc-file "/path/to/examples/micromamba/.mambarc" create -n numpy_env
 #   pip install numpy==2.2.4 -y
 env = environmentManager.create("numpy_env", {"pip": ["numpy==2.2.4"]})
+
+# Alternatively, it is possible to provide a pyproject.toml file:
+# env = environmentManager.createFromConfig("numpy_env", "path/to/pyproject.toml")
 
 # This will be executed in the environment, by creating a bash or powershell script which runs commands like:
 #   export MAMBA_ROOT_PREFIX="/path/to/examples/micromamba"
@@ -125,8 +166,101 @@ If there are no proxy settings found (or none is working), the launcher opens a 
 
 The launcher should only open a GUI if necessary: to enter the proxy settings or if the application launch time is too long (the launch duration is greater than `timeout`) to show a progress bar and the logs (downloads, installation, env creation, etc. ).
 
-The GUI should be made with the Textual library, Qt or Tkinter. The issue is that the GUI must run in the main thread. This means there must be two threads: the main one for the GUI, and a second one for everything else. They must communicate: the main GUI provides the proxy settings if required, the other thread tells about the logs / download / loading progress.
+The GUI should be made with Tkinter. The issue is that the GUI must run in the main thread. This means there must be two threads: the main one for the GUI, and a second one for everything else. They must communicate: the main GUI provides the proxy settings if required, the other thread tells about the logs / download / loading progress.
 
-It is also possible to disable the gui (gui: "none"), in which case everything happens in the console, and the proxy settings will be requested with python's `input()` function.
+## Alternative launchers
 
-For now, just explain how the main thread and the other thread will communicate when using a GUI.
+Other launchers will be avaible: 
+- the Qt launcher, which will use Qt for the GUI
+- the Textual launcher. which will use the Textual library for the GUI
+- the console / no GUI launcher, which won't use any GUI, but the python's input() function for the proxy settings
+
+
+
+#  Implementation Strategy
+
+1. Shared Data Structure (Thread-Safe Queue)
+Use queue.Queue (thread-safe) to pass messages from worker → GUI:
+import queue
+from threading import Thread
+
+# Shared queue for worker → GUI communication
+event_queue = queue.Queue()
+
+# Worker thread sends events like:
+event_queue.put({
+    'type': 'progress',
+    'current': 45,
+    'total': 100,
+    'message': 'Downloading sources...'
+})
+
+event_queue.put({
+    'type': 'log',
+    'message': 'Installation complete'
+})
+
+event_queue.put({
+    'type': 'proxy_required',
+    'request_id': uuid.uuid4()  # For response tracking
+})
+
+2. GUI → Worker Communication (Events)
+For sending proxy settings or cancellation:
+# GUI collects proxy settings and sends back
+response_queue = queue.Queue()
+
+response_queue.put({
+    'type': 'proxy_settings',
+    'http': 'http://proxy:8080',
+    'https': 'https://proxy:8080'
+})
+
+# Worker thread listens
+proxy_settings = response_queue.get(timeout=30)  # Wait 30 seconds
+
+3. GUI Integration (Textual Example)
+class LauncherApp(App):
+    def on_mount(self):
+        # Start worker thread
+        self.worker_thread = Thread(target=self.launcher_worker, daemon=True)
+        self.worker_thread.start()
+
+        # Periodically check event queue
+        self.set_interval(0.1, self.check_events)
+
+    def check_events(self):
+        try:
+            event = event_queue.get_nowait()
+            if event['type'] == 'progress':
+                self.update_progress(event['current'], event['total'])
+            elif event['type'] == 'log':
+                self.append_log(event['message'])
+            elif event['type'] == 'proxy_required':
+                self.show_proxy_dialog(event['request_id'])
+        except queue.Empty:
+            pass
+
+    def on_proxy_dialog_submit(self, settings):
+        response_queue.put({'type': 'proxy_settings', 'data': settings})
+
+def launcher_worker():
+    try:
+        # Try normal operations
+        result = check_update()
+        event_queue.put({'type': 'log', 'message': f'Found version {result}'})
+    except NetworkError:
+        # Request proxy settings from GUI
+        event_queue.put({'type': 'proxy_required'})
+        settings = response_queue.get(timeout=30)
+        # Retry with proxy...
+
+Key Design Points
+
+- Queue-based: No direct thread manipulation, just put/get messages
+- Non-blocking: GUI stays responsive with get_nowait() or short timeouts
+- Unique IDs: For tracking which dialog response corresponds to which request
+- Error handling: Worker thread catches all exceptions and sends error events
+- Timeout protection: Prevent GUI freeze if worker hangs (use timeout parameter)
+
+This ensures the GUI remains responsive while the worker performs I/O-bound operations (downloads, environment setup).
