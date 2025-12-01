@@ -26,7 +26,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -66,7 +65,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -91,7 +89,6 @@ main: main.py
 path: "{original_path}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -112,7 +109,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -137,7 +133,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -164,7 +159,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -189,7 +183,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -215,7 +208,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -240,7 +232,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: true
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -274,7 +265,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: true
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -305,7 +295,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -333,7 +322,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -363,7 +351,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -400,7 +387,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -430,7 +416,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -473,7 +458,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 install: install.sh
 timeout: 3
@@ -514,7 +498,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -540,7 +523,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 install: missing_install.sh
 timeout: 3
@@ -586,7 +568,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -631,7 +612,6 @@ main: main.py
 path: "{tmpdir}"
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """

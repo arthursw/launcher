@@ -77,35 +77,17 @@ def launcher_worker(
         event_queue.put(
             {"type": "log", "message": "Setting up Python environment..."}
         )
-        launcher.setup_environment(version)
+        env = launcher.setup_environment(version)
         event_queue.put(
             {"type": "log", "message": "Environment setup complete"}
         )
         event_queue.put({"type": "progress", "current": 75, "total": 100})
 
-        # Run install script if defined
-        if launcher.config.get("install"):
-            event_queue.put(
-                {"type": "log", "message": "Running install script..."}
-            )
-            try:
-                launcher.run_install_script(version)
-                event_queue.put(
-                    {"type": "log", "message": "Install script completed"}
-                )
-            except Exception as e:
-                event_queue.put(
-                    {"type": "error", "message": f"Install script failed: {e}"}
-                )
-                raise
-
-        event_queue.put({"type": "progress", "current": 85, "total": 100})
-
         # Run application
         event_queue.put(
             {"type": "log", "message": "Launching application..."}
         )
-        launcher.run_app(version)
+        launcher.run_app(env)
         event_queue.put({"type": "progress", "current": 100, "total": 100})
         event_queue.put({"type": "log", "message": "Application launched successfully"})
         event_queue.put({"type": "complete"})

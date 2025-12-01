@@ -20,7 +20,9 @@ version: exampleapp-v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The v
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
 install: run.sh                                                          # The install script with additional install commands
-timeout: 3                                                               # The time before opening the GUI which displays what's happening
+gui_timeout: 3                                                           # The time (in seconds) before opening the GUI which displays what's happening
+init_message: "Initialized"                                              # The message confirming the app is initialized (so the app is installed properly)
+init_timeout: 30                                                         # The time (in seconds) before throwing an "Install error" when waiting the init message
 proxy_servers:                                                           # The proxy settings to use if behind a proxy (undefined by default, and set by the user if necessary)
   http: http://username:password@corp.com:8080
   https: https://username:password@corp.com:8080
@@ -56,6 +58,8 @@ configuration: pyproject.toml
 name: MyApp
 repository: git@gitlab.inria.fr:myorg/myapp.git
 api: https://my-custom-api.com/  # Overrides the inferred GitLab API
+tags_endpoint: /repos/owner/exampleapp/git/tags                          # The API endpoint to get the list of tags (optional if repository is provided)
+archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py
 path: "."
 version: myapp-v1.0.0
@@ -69,14 +73,16 @@ This launcher will:
 - if `auto_update`: check the latest tag from `api`/`tags_endpoint` and set the current version from this latest tag in the following format: `appname-tagname`
 - otherwise: set the current version from the `version` attribute
 - check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
-- if the sources exist, create an environment if necessary and execute the main script: 
-  - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
-  - if the environment does not exists: create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a pixi.toml, environment.yml or requirements.txt file.)
-  - run the install script defined by the `install` attribute if any
-  - run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
-- otherwise: download them from the `archive_endpoint` and extract them in the `path`
+- if the sources do not exist: download them from the `archive_endpoint` and extract them in the `path`
 - update `application.yml` to set the current version in `version`
-- create an environment if necessary and execute the main script as described above
+- get or create the environment and execute the main script: 
+  - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
+  - if the environment does not exists: 
+    - create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a `pixi.toml`, `environment.yml` or `requirements.txt` file.)
+    - run the install script defined by the `install` attribute if any
+- run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
+- read the stdout and wait for the `init_message`: it will confirm the app is properly installed
+- if the `init_message` is not in the stdout for `init_timeout` seconds: ask the user to either delete the environment (to trigger a new installation when restarting the app), or exit, or wait more
 
 ## Python environment management
 
@@ -86,27 +92,19 @@ The following enables to create a python environment with wetlands:
 ```python
 from wetlands.environment_manager import EnvironmentManager
 
-# Initialize the environment manager (will download and install micromamba at `micromamba/`)
-environmentManager = EnvironmentManager("micromamba/")
+logging.basicConfig(level=logging.INFO)
+
+# Initialize the environment manager (will download and install pixi at `pixi/`)
+environmentManager = EnvironmentManager()
 
 # Create and launch a Conda environment named "numpy_env"
-
-# This will run a bash script or powershell script which runs commands like:
-#   export MAMBA_ROOT_PREFIX="/path/to/examples/micromamba"
-#   eval "$(bin/micromamba shell hook -s posix)"
-#   micromamba --rc-file "/path/to/examples/micromamba/.mambarc" create -n numpy_env
-#   pip install numpy==2.2.4 -y
 env = environmentManager.create("numpy_env", {"pip": ["numpy==2.2.4"]})
 
 # Alternatively, it is possible to provide a pyproject.toml file:
 # env = environmentManager.createFromConfig("numpy_env", "path/to/pyproject.toml")
 
-# This will be executed in the environment, by creating a bash or powershell script which runs commands like:
-#   export MAMBA_ROOT_PREFIX="/path/to/examples/micromamba"
-#   eval "$(bin/micromamba shell hook -s posix)"
-#   micromamba activate numpy_env
-#   python downloaded_sources/main.py
-env.executeCommands("python downloaded_sources/main.py")
+# This will be executed in the environment, by creating a bash or powershell script which activates the env and executes the commands (here )
+env.executeCommands(["python downloaded_sources/main.py"])
 ```
 
 ## Proxy settings
@@ -160,7 +158,7 @@ condaConfigurations += [
 ]
 ```
 
-If there are no proxy settings found (or none is working), the launcher opens a simple dialog for the user to enter the proxy settings. Once the user enters its proxy settings, the launcher saves them in `application.yml`, updates `micromamba/.mambarc`, and continue.
+If there are no proxy settings found (or none is working), the launcher opens a simple dialog for the user to enter the proxy settings. Once the user enters its proxy settings, the launcher saves them in `application.yml`, and continue.
 
 ## GUI
 

@@ -29,7 +29,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """
@@ -225,7 +224,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 install: install.sh
 timeout: 3
@@ -312,7 +310,6 @@ main: main.py
 path: "."
 version: testapp-v1.0.0
 auto_update: false
-project: testapp
 configuration: pyproject.toml
 timeout: 3
 """

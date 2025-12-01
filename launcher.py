@@ -1,5 +1,6 @@
 """Core launcher functionality for auto-updating and running applications."""
 
+from math import e
 import os
 import re
 import shutil
@@ -10,7 +11,7 @@ from typing import Optional
 
 import requests
 import yaml
-from wetlands.environment_manager import EnvironmentManager
+from wetlands.environment_manager import EnvironmentManager, Environment
 
 from repository_parser import parse_repository_url, merge_endpoints
 
@@ -203,122 +204,6 @@ class Launcher:
 
         print(f"Sources extracted to {dest_path}")
 
-    def setup_environment(self, version: str) -> None:
-        """Set up Python environment for the application.
-
-        Creates a conda environment and installs dependencies from
-        the configuration file (e.g., pyproject.toml).
-
-        Args:
-            version: Version string in format "appname-tagname"
-        """
-        source_dir = Path(self.config["path"]) / version
-        config_file = self.config["configuration"]
-        config_path = source_dir / config_file
-
-        if not config_path.exists():
-            print(f"Configuration file {config_file} not found in sources")
-            return
-
-        # Create environment name from application name
-        env_name = self._sanitize_env_name(self.config["name"])
-
-        if self.environment_manager is None:
-            micromamba_path = Path("micromamba")
-            self.environment_manager = EnvironmentManager(str(micromamba_path))
-
-        print(f"Setting up environment: {env_name}")
-
-        # Create environment with dependencies from config file
-        self.environment_manager.create(env_name, str(config_path))
-
-        print(f"Environment {env_name} ready")
-
-    def run_install_script(self, version: str) -> None:
-        """Execute the install script in the environment.
-
-        Runs the install script defined in the configuration if it exists.
-
-        Args:
-            version: Version string in format "appname-tagname"
-        """
-        if "install" not in self.config or not self.config["install"]:
-            return
-
-        source_dir = Path(self.config["path"]) / version
-        install_script = self.config["install"]
-        env_name = self._sanitize_env_name(self.config["name"])
-
-        script_path = source_dir / install_script
-
-        if not script_path.exists():
-            print(f"Install script not found: {script_path}, skipping")
-            return
-
-        if self.environment_manager is None:
-            micromamba_path = Path("micromamba")
-            self.environment_manager = EnvironmentManager(str(micromamba_path))
-
-        print(f"Running install script: {install_script}")
-
-        env = self.environment_manager.get_environment(env_name)
-        env.executeCommands(f"bash {install_script}")
-
-    def run_app(self, version: str) -> None:
-        """Execute the main application script in the environment.
-
-        Args:
-            version: Version string in format "appname-tagname"
-        """
-        source_dir = Path(self.config["path"]) / version
-        main_script = self.config["main"]
-        env_name = self._sanitize_env_name(self.config["name"])
-
-        script_path = source_dir / main_script
-
-        if not script_path.exists():
-            raise FileNotFoundError(f"Main script not found: {script_path}")
-
-        if self.environment_manager is None:
-            micromamba_path = Path("micromamba")
-            self.environment_manager = EnvironmentManager(str(micromamba_path))
-
-        print(f"Running application: {main_script}")
-
-        env = self.environment_manager.get_environment(env_name)
-        env.executeCommands(f"python {main_script}")
-
-    def run(self) -> None:
-        """Main launcher orchestration method.
-
-        This method:
-        1. Determines current version (from config or latest tag)
-        2. Downloads sources if necessary
-        3. Sets up environment if necessary
-        4. Runs the install script if defined
-        5. Runs the application
-        """
-        version = self.get_current_version()
-        print(f"Current version: {version}")
-
-        # Update config with current version
-        self.config["version"] = version
-        self.save_config()
-
-        # Download if necessary
-        if not self.sources_exist(version):
-            print(f"Sources not found for {version}, downloading...")
-            self.download_sources(version)
-
-        # Setup environment
-        self.setup_environment(version)
-
-        # Run install script if defined
-        self.run_install_script(version)
-
-        # Run application
-        self.run_app(version)
-
     @staticmethod
     def _sanitize_env_name(name: str) -> str:
         """Convert application name to valid conda environment name.
@@ -334,3 +219,74 @@ class Launcher:
         # Remove special characters, keep alphanumeric, underscore, hyphen
         sanitized = re.sub(r"[^a-zA-Z0-9_-]", "", name)
         return sanitized.lower()
+
+    def setup_environment(self, version: str) -> Environment:
+        """Set up Python environment for the application.
+
+        Creates a conda environment and installs dependencies from
+        the configuration file (e.g., pyproject.toml).
+
+        Args:
+            version: Version string in format "appname-tagname"
+        """
+        source_dir = Path(self.config["path"]) / version
+        config_file = self.config["configuration"]
+        config_path = source_dir / config_file
+
+        if not config_path.exists():
+            raise Exception(f"Configuration file {config_file} not found")
+
+        # Create environment name from application name
+        env_name = self._sanitize_env_name(self.config["name"])
+
+        if self.environment_manager is None:
+            self.environment_manager = EnvironmentManager()
+
+        print(f"Setting up environment: {env_name}")
+
+        # Create environment with dependencies from config file
+        env_path = self.environment_manager.settingsManager.getEnvironmentPathFromName(env_name)
+        env_exists = self.environment_manager.environmentExists(env_path)
+        env = self.environment_manager.createFromConfig(env_name, str(config_path))
+        # Run install script if defined
+        install_script = self.config.get("install_script")
+        if not env_exists and install_script:
+            env.executeCommands([f"bash {install_script}"])
+        return env
+
+    def run_app(self, env: Environment) -> None:
+        """Run the main application script within the given environment.
+
+        Args:
+            env: Environment object to run the application in
+        """
+        main_script = self.config["main"]
+        print(f"Running application: {main_script}")
+        env.executeCommands([f"python {main_script}"])
+
+    def run(self) -> None:
+        """Main launcher orchestration method.
+
+        This method:
+        1. Determines current version (from config or latest tag)
+        2. Downloads sources if necessary
+        3. Sets up environment and runs the install script if necessary
+        4. Runs the application
+        """
+        version = self.get_current_version()
+        print(f"Current version: {version}")
+
+        # Update config with current version
+        self.config["version"] = version
+        self.save_config()
+
+        # Download if necessary
+        if not self.sources_exist(version):
+            print(f"Sources not found for {version}, downloading...")
+            self.download_sources(version)
+
+        # Setup environment
+        env = self.setup_environment(version)
+
+        # Run application
+        self.run_app(env)

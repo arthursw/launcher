@@ -114,18 +114,6 @@ auto_update: true
 configuration: pyproject.toml
 ```
 
-**Option 3: Mixed (repository + overrides)**
-```yaml
-name: ExampleApp
-repository: git@github.com:owner/exampleapp.git
-api: https://custom.api.com/  # Overrides the inferred GitHub API
-main: main.py
-path: "."
-version: exampleapp-v0.3.50
-auto_update: true
-configuration: pyproject.toml
-```
-
 #### Supported Repository Formats
 
 The launcher supports both SSH and HTTPS repository URLs:

@@ -9,7 +9,7 @@ dependencies = [
     "requests>=2.32.3",
     "textual>=3.1.0",
     "toml>=0.10.2",
-    "wetlands>=0.1.4",
+    "wetlands>=0.3.3",
 ]
 
 [project.optional-dependencies]
