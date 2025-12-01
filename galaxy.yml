@@ -1,9 +1,0 @@
-name: Galaxy
-repository: git@github.com:arthursw/galaxy.git
-main: launcher.py
-path: galaxy/
-auto_update: true
-configuration: pyproject.toml
-install: run.sh
-timeout: 3
-proxy_servers: null
