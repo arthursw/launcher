@@ -2,7 +2,8 @@ Create a launcher app in python, which launches and auto-updates an application 
 
 Its primary goal is to ensure the application's source code is present and up-to-date, set up the necessary Python environment, and then launch the main application (run the main script located in the downloaded sources).
 
-This launcher will be packaged into an executable with PyInstaller (or cxFreeze).
+The project will be managed with `uv` and a `pyproject.toml`.
+Eventually, this launcher will be packaged into an executable with PyInstaller (or cxFreeze).
 
 With this launcher, it will be extremely easy for a developper to ship his app: just create a zip containing the launcher executable and the `application.yml` filled with the settings of the application to launch.
 
@@ -16,10 +17,10 @@ tags_endpoint: /repos/owner/exampleapp/git/tags                          # The A
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py                                                            # The main script to execute in the sources
 path: "."                                                                # The directory in which to extract the sources (could be "~/Applications/")
-version: exampleapp-v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app
+version: exampleapp-v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
-install: run.sh                                                          # The install script with additional install commands
+install: install.py                                                      # The install script with additional install commands
 gui_timeout: 3                                                           # The time (in seconds) before opening the GUI which displays what's happening
 init_message: "Initialized"                                              # The message confirming the app is initialized (so the app is installed properly)
 init_timeout: 30                                                         # The time (in seconds) before throwing an "Install error" when waiting the init message
@@ -27,8 +28,6 @@ proxy_servers:                                                           # The p
   http: http://username:password@corp.com:8080
   https: https://username:password@corp.com:8080
 ```
-
-### Repository Attribute
 
 The `repository` attribute allows simplifying configuration by automatically inferring the API endpoints. Instead of specifying `api`, `tags_endpoint`, and `archive_endpoint` separately, you can provide a single `repository` attribute:
 
@@ -48,16 +47,14 @@ name: MyApp
 repository: git@github.com:myorg/myapp.git
 main: main.py
 path: "."
-version: myapp-v1.0.0
 auto_update: true
 configuration: pyproject.toml
 ```
 
-**GitLab on-premise with override**
+**GitLab from API**
 ```yaml
 name: MyApp
-repository: git@gitlab.inria.fr:myorg/myapp.git
-api: https://my-custom-api.com/  # Overrides the inferred GitLab API
+api: https://my-custom-api.com/ 
 tags_endpoint: /repos/owner/exampleapp/git/tags                          # The API endpoint to get the list of tags (optional if repository is provided)
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py
@@ -67,11 +64,10 @@ auto_update: true
 configuration: pyproject.toml
 ```
 
-
 This launcher will:
 - read the `application.yml` file located beside the launcher executable
 - if `auto_update`: check the latest tag from `api`/`tags_endpoint` and set the current version from this latest tag in the following format: `appname-tagname`
-- otherwise: set the current version from the `version` attribute
+- otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
 - check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
 - if the sources do not exist: download them from the `archive_endpoint` and extract them in the `path`
 - update `application.yml` to set the current version in `version`
@@ -79,16 +75,16 @@ This launcher will:
   - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
   - if the environment does not exists: 
     - create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a `pixi.toml`, `environment.yml` or `requirements.txt` file.)
-    - run the install script defined by the `install` attribute if any
+    - run the python install script defined by the `install` attribute if any
 - run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
 - read the stdout and wait for the `init_message`: it will confirm the app is properly installed
-- if the `init_message` is not in the stdout for `init_timeout` seconds: ask the user to either delete the environment (to trigger a new installation when restarting the app), or exit, or wait more
+- if the `init_message` is not in the stdout for `init_timeout` seconds: ask the user to either delete the environment (to trigger a new installation when restarting the app) and exit, or just exit, or wait more.
 
 ## Python environment management
 
-The wetlands library will be used to set up the python environment.
+The Wetlands library will be used to set up the python environment, and execute commands in this environment. Conda / mamba / micromamba will NOT be used directly.
 
-The following enables to create a python environment with wetlands:
+The following enables to create a python environment with Wetlands:
 ```python
 from wetlands.environment_manager import EnvironmentManager
 
@@ -103,9 +99,13 @@ env = environmentManager.create("numpy_env", {"pip": ["numpy==2.2.4"]})
 # Alternatively, it is possible to provide a pyproject.toml file:
 # env = environmentManager.createFromConfig("numpy_env", "path/to/pyproject.toml")
 
-# This will be executed in the environment, by creating a bash or powershell script which activates the env and executes the commands (here )
-env.executeCommands(["python downloaded_sources/main.py"])
+# This will be executed in the environment, by creating a bash or powershell script which activates the env and executes the commands
+env.execute_commands(["python downloaded_sources/install.py"])
+# Or to launch the app
+# env.execute_commands(["python downloaded_sources/main.py"])
 ```
+
+For information purpose, the wetlands library is symlkinked at the root : you can check `./wetlands/docs/`, `./wetlands/examples/` or `./wetlands/src/` to know more about Wetlands.
 
 ## Proxy settings
 
@@ -164,7 +164,7 @@ If there are no proxy settings found (or none is working), the launcher opens a 
 
 The launcher should only open a GUI if necessary: to enter the proxy settings or if the application launch time is too long (the launch duration is greater than `timeout`) to show a progress bar and the logs (downloads, installation, env creation, etc. ).
 
-The GUI should be made with Tkinter. The issue is that the GUI must run in the main thread. This means there must be two threads: the main one for the GUI, and a second one for everything else. They must communicate: the main GUI provides the proxy settings if required, the other thread tells about the logs / download / loading progress.
+The GUI should be made with Tkinter be default. The issue is that the GUI must run in the main thread. This means there must be two threads: the main one for the GUI, and a second one for everything else. They must communicate: the main GUI provides the proxy settings if required, the other thread tells about the logs / download / loading progress.
 
 ## Alternative launchers
 
@@ -172,8 +172,6 @@ Other launchers will be avaible:
 - the Qt launcher, which will use Qt for the GUI
 - the Textual launcher. which will use the Textual library for the GUI
 - the console / no GUI launcher, which won't use any GUI, but the python's input() function for the proxy settings
-
-
 
 #  Implementation Strategy
 

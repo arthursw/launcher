@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "python": "/Users/amasson/Travail/launcher/.venv/bin/python3",
-            "args": ["--path", "galaxy/", "--config", "galaxy.yml"],
+            "args": ["--config", "galaxy.yml"],
         }
     ]
 }

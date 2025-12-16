@@ -1,0 +1,35 @@
+# Example application.yml configuration for the launcher
+# Copy this file to application.yml and customize for your application
+
+# Required fields
+name: ExampleApp                                                   # Application name (used for environment name)
+main: main.py                                                      # Main script to execute in the sources
+path: "."                                                          # Directory to extract sources (e.g., "~/Applications/")
+
+# Repository configuration (choose one approach)
+# Option 1: Use repository URL (recommended - endpoints are inferred automatically)
+repository: git@github.com:owner/exampleapp.git                    # SSH or HTTPS URL
+
+# Option 2: Explicit API endpoints (use if repository inference doesn't work)
+# api: https://api.github.com/                                     # API base URL
+# tags_endpoint: /repos/owner/exampleapp/tags                      # Endpoint to get list of tags
+# archive_endpoint: /repos/owner/exampleapp/zipball/{ref}          # Endpoint to download source archive
+
+# Version management
+auto_update: true                                                  # Auto-check for updates on launch
+# version: exampleapp-v0.3.50                                      # Manual version (only used if auto_update=false)
+
+# Environment configuration
+configuration: pyproject.toml                                      # Config file for dependencies
+                                                                   # Supports: pyproject.toml, pixi.toml, environment.yml, requirements.txt
+# install: install.py                                              # Optional install script to run after env creation
+
+# GUI and timing
+gui_timeout: 3                                                     # Seconds before showing GUI (0 = immediate)
+init_message: "Initialized"                                        # Message indicating app is ready
+init_timeout: 30                                                   # Seconds to wait for init_message
+
+# Proxy settings (optional - leave empty to auto-detect or prompt)
+# proxy_servers:
+#   http: http://username:password@proxy.corp.com:8080
+#   https: https://username:password@proxy.corp.com:8080
