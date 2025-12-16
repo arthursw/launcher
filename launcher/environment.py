@@ -1,13 +1,8 @@
 """Environment management wrapper around Wetlands library."""
 
 import logging
-import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
-
-# Import wetlands - it's symlinked at the project root
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "wetlands" / "src"))
+from typing import TYPE_CHECKING, Optional
 
 from wetlands.environment_manager import EnvironmentManager
 from wetlands.environment import Environment
@@ -16,9 +11,6 @@ if TYPE_CHECKING:
     from .config import AppConfig
 
 logger = logging.getLogger(__name__)
-
-# Type alias for output callback: (line: str) -> None
-OutputCallback = Callable[[str], None]
 
 
 class EnvironmentError(Exception):
@@ -55,6 +47,11 @@ class LauncherEnvironmentManager:
         )
 
         logger.info(f"EnvironmentManager initialized at {wetlands_path}")
+
+    @property
+    def manager(self) -> EnvironmentManager:
+        """Get the underlying Wetlands EnvironmentManager."""
+        return self._manager
 
     def environment_exists(self, env_name: str) -> bool:
         """Check if an environment with the given name exists.
@@ -117,65 +114,6 @@ class LauncherEnvironmentManager:
         except Exception as e:
             logger.error(f"Failed to delete environment '{env_name}': {e}")
             raise EnvironmentError(f"Failed to delete environment: {e}") from e
-
-    def execute_commands(
-        self,
-        env: Environment,
-        commands: list[str],
-        wait: bool = True,
-        output_callback: Optional[OutputCallback] = None,
-    ) -> subprocess.Popen:
-        """Execute commands in an environment.
-
-        Args:
-            env: The Wetlands Environment
-            commands: List of commands to execute
-            wait: Whether to wait for completion
-            output_callback: Optional callback for stdout lines
-
-        Returns:
-            The subprocess.Popen instance
-        """
-        # Convert list to Commands format expected by Wetlands
-        commands_dict = {"all": commands}
-
-        process = env.execute_commands(
-            commands=commands_dict,
-            wait=wait,
-        )
-
-        if output_callback and process.stdout:
-            # Read output and call callback for each line
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    output_callback(line)
-
-        return process
-
-    def run_script(
-        self,
-        env: Environment,
-        script_path: Path,
-        output_callback: Optional[OutputCallback] = None,
-    ) -> subprocess.Popen:
-        """Run a Python script in the environment.
-
-        Args:
-            env: The Wetlands Environment
-            script_path: Path to the Python script
-            output_callback: Optional callback for stdout lines
-
-        Returns:
-            The subprocess.Popen instance
-        """
-        commands = [f'python "{script_path}"']
-        return self.execute_commands(
-            env,
-            commands,
-            wait=False,
-            output_callback=output_callback,
-        )
 
     def set_proxies(self, http_proxy: Optional[str], https_proxy: Optional[str]) -> None:
         """Set proxy settings for the environment manager.

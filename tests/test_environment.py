@@ -121,23 +121,6 @@ class TestLauncherEnvironmentManager:
         })
 
     @patch('launcher.environment.EnvironmentManager')
-    def test_execute_commands(self, mock_env_manager_class):
-        """Test executing commands in environment."""
-        mock_instance = MagicMock()
-        mock_env_manager_class.return_value = mock_instance
-
-        mock_env = MagicMock()
-        mock_process = MagicMock()
-        mock_env.execute_commands.return_value = mock_process
-
-        manager = LauncherEnvironmentManager()
-        result = manager.execute_commands(mock_env, ["echo hello"], wait=True)
-
-        mock_env.execute_commands.assert_called_once()
-        call_kwargs = mock_env.execute_commands.call_args[1]
-        assert call_kwargs['wait'] is True
-
-    @patch('launcher.environment.EnvironmentManager')
     def test_exit(self, mock_env_manager_class):
         """Test exiting the environment manager."""
         mock_instance = MagicMock()

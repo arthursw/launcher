@@ -253,9 +253,7 @@ class LauncherWorker:
             # Run install script if defined
             if self._config.install:
                 self._log("Running install script...")
-                if not self._runner.run_install_script(
-                    output_callback=lambda line: self._log(f"[install] {line}")
-                ):
+                if not self._runner.run_install_script():
                     raise Exception("Install script failed")
 
             # Start main script

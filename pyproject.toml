@@ -9,6 +9,7 @@ dependencies = [
     "toml>=0.10",
     "PySide6>=6.0",
     "textual>=0.40",
+    "wetlands>=0.4.11",
 ]
 
 [project.optional-dependencies]

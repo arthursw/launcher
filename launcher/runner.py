@@ -3,18 +3,17 @@
 import logging
 import subprocess
 import threading
-import time
-from pathlib import Path
 from typing import Callable, Optional
 
 from wetlands.environment import Environment
 
 from .config import AppConfig
-from .environment import LauncherEnvironmentManager, OutputCallback
+from .environment import LauncherEnvironmentManager
 
 logger = logging.getLogger(__name__)
 
 # Type aliases
+OutputCallback = Callable[[str], None]
 InitTimeoutCallback = Callable[[], str]  # Returns 'wait', 'reinstall', or 'exit'
 
 
@@ -52,14 +51,8 @@ class ScriptRunner:
         self._output_lines: list[str] = []
         self._lock = threading.Lock()
 
-    def run_install_script(
-        self,
-        output_callback: Optional[OutputCallback] = None,
-    ) -> bool:
+    def run_install_script(self) -> bool:
         """Run the install script if defined.
-
-        Args:
-            output_callback: Optional callback for stdout lines
 
         Returns:
             True if install script ran successfully or wasn't defined
@@ -75,12 +68,11 @@ class ScriptRunner:
 
         logger.info(f"Running install script: {install_path}")
         try:
-            process = self.env_manager.run_script(
-                self.env,
-                install_path,
-                output_callback=output_callback,
+            # Use env.execute_commands as per specs.md
+            process = self.env.execute_commands(
+                commands=[f'python "{install_path}"'],
+                wait=True,
             )
-            process.wait()
 
             if process.returncode != 0:
                 logger.error(f"Install script failed with return code {process.returncode}")
@@ -123,37 +115,33 @@ class ScriptRunner:
             if output_callback:
                 output_callback(line)
 
-        commands = [f'python -u "{main_script_path}"']
-
-        # Start process without waiting
+        # Use env.execute_commands as per specs.md
         self._process = self.env.execute_commands(
-            commands={"all": commands},
+            commands=[f'python -u "{main_script_path}"'],
             wait=False,
         )
 
-        # Start a thread to read output
-        if self._process.stdout:
+        # Start a thread to read output using ProcessLogger
+        process_logger = self.env_manager.manager.get_process_logger(self._process)
+        if process_logger:
             output_thread = threading.Thread(
-                target=self._read_output,
-                args=(wrapped_callback,),
+                target=self._read_output_from_logger,
+                args=(process_logger, wrapped_callback),
                 daemon=True,
             )
             output_thread.start()
 
         return self._process
 
-    def _read_output(self, callback: OutputCallback) -> None:
-        """Read process output in a separate thread.
+    def _read_output_from_logger(self, process_logger, callback: OutputCallback) -> None:
+        """Read process output using ProcessLogger.
 
         Args:
+            process_logger: Wetlands ProcessLogger instance
             callback: Callback to call for each line
         """
-        if not self._process or not self._process.stdout:
-            return
-
         try:
-            for line in self._process.stdout:
-                line = line.strip()
+            for line in process_logger:
                 if line:
                     callback(line)
         except Exception as e:
