@@ -17,7 +17,7 @@ tags_endpoint: /repos/owner/exampleapp/git/tags                          # The A
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py                                                            # The main script to execute in the sources
 path: "."                                                                # The directory in which to extract the sources (could be "~/Applications/")
-version: exampleapp-v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
+version: v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
 install: install.py                                                      # The install script with additional install commands
@@ -59,16 +59,16 @@ tags_endpoint: /repos/owner/exampleapp/git/tags                          # The A
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py
 path: "."
-version: myapp-v1.0.0
+version: v1.0.0
 auto_update: true
 configuration: pyproject.toml
 ```
 
 This launcher will:
 - read the `application.yml` file located beside the launcher executable
-- if `auto_update`: check the latest tag from `api`/`tags_endpoint` and set the current version from this latest tag in the following format: `appname-tagname`
+- if `auto_update`: check the latest tag from `api`/`tags_endpoint` and set the current version from this latest tag in the following format: `tagname`
 - otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
-- check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
+- in all cases: check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
 - if the sources do not exist: download them from the `archive_endpoint` and extract them in the `path`
 - update `application.yml` to set the current version in `version`
 - get or create the environment and execute the main script: 

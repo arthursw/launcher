@@ -118,7 +118,8 @@ def check_sources_exist(config: AppConfig) -> bool:
     if not config.version:
         return False
 
-    sources_path = Path(config.path).expanduser() / config.version
+    version_string = get_version_string(config.name, config.version)
+    sources_path = Path(config.path).expanduser() / version_string
     return sources_path.is_dir()
 
 
@@ -259,37 +260,45 @@ def update_sources(
         latest_tag = fetch_latest_tag(config, proxy_settings)
         version_string = get_version_string(config.name, latest_tag)
 
-        # Check if we already have this version
-        if config.version == version_string:
-            logger.info(f"Already up to date: {version_string}")
-            return False, version_string
-
         # Check if sources exist
         sources_path = Path(config.path).expanduser() / version_string
         if sources_path.is_dir():
-            logger.info(f"Sources already exist: {sources_path}")
-            # Update config version
-            config.version = version_string
-            config.save()
-            return False, version_string
+            if config.version == latest_tag:
+                logger.info(f"Already up to date: {latest_tag}")
+                return False, latest_tag
+            else:
+                logger.info(f"Sources already exist: {sources_path}")
+                # Update config version
+                config.version = latest_tag
+                config.save()
+                return False, latest_tag
 
         # Download new sources
+        logger.info(f"Sources not found, downloading: {version_string}")
         download_and_extract_sources(
             config, latest_tag, proxy_settings, progress_callback
         )
 
         # Update config version
-        config.version = version_string
+        config.version = latest_tag
         config.save()
 
-        return True, version_string
+        return True, latest_tag
     else:
         # No auto-update, use existing version
         if not config.version:
             raise UpdaterError("auto_update is false but no version is specified")
 
-        # Check if sources exist
-        if not check_sources_exist(config):
-            raise UpdaterError(f"Sources not found for version: {config.version}")
+        tag_name = config.version
+        version_string = get_version_string(config.name, tag_name)
 
-        return False, config.version
+        # Check if sources exist, download if not
+        sources_path = Path(config.path).expanduser() / version_string
+        if not sources_path.is_dir():
+            logger.info(f"Sources not found, downloading: {version_string}")
+            download_and_extract_sources(
+                config, tag_name, proxy_settings, progress_callback
+            )
+            return True, tag_name
+
+        return False, tag_name
