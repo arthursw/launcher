@@ -60,12 +60,29 @@ class AppConfig:
         # Remove special characters to make a valid env name
         return "".join(c if c.isalnum() or c == "_" else "_" for c in self.name)
 
+    def get_sources_path(self, version: Optional[str] = None) -> Path:
+        """Get the path where sources should be extracted for a given version.
+
+        Args:
+            version: Version tag (e.g., "v1.2.3"). Defaults to self.version.
+
+        Returns:
+            Path to sources directory (e.g., ~/apps/myapp-v1.2.3)
+        """
+        ver = version or self.version
+        if ver:
+            # Sanitize app name (lowercase, no special chars except dash/underscore)
+            sanitized_name = "".join(
+                c if c.isalnum() or c in "-_" else "" for c in self.name.lower()
+            )
+            folder_name = f"{sanitized_name}-{ver}"
+            return Path(self.path).expanduser() / folder_name
+        return Path(self.path).expanduser()
+
     @property
     def sources_path(self) -> Path:
         """Get the path where sources should be extracted."""
-        if self.version:
-            return Path(self.path).expanduser() / self.version
-        return Path(self.path).expanduser()
+        return self.get_sources_path()
 
     @property
     def main_script_path(self) -> Path:

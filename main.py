@@ -119,8 +119,11 @@ def run_with_delayed_gui(
             time.sleep(0.1)
 
 
-def main() -> int:
+def main(config_path: Optional[Path] = None) -> int:
     """Main entry point.
+
+    Args:
+        config_path: Optional config file path. If provided, overrides CLI --config.
 
     Returns:
         Exit code (0 for success, non-zero for error)
@@ -163,8 +166,8 @@ def main() -> int:
     setup_logging(args.debug)
     logger = logging.getLogger(__name__)
 
-    # Resolve config path
-    config_path = args.config.resolve()
+    # Resolve config path (use parameter if provided, otherwise from CLI args)
+    config_path = config_path.resolve() if config_path else args.config.resolve()
     if not config_path.exists():
         print(f"Error: Configuration file not found: {config_path}", file=sys.stderr)
         return 1

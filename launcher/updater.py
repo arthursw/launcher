@@ -87,25 +87,6 @@ def fetch_latest_tag(
     raise UpdaterError(f"Unexpected tags response format: {type(tags)}")
 
 
-def get_version_string(app_name: str, tag_name: str) -> str:
-    """Create a version string from app name and tag.
-
-    Format: appname-tagname (e.g., "exampleapp-v0.3.50")
-
-    Args:
-        app_name: Application name
-        tag_name: Tag name from repository
-
-    Returns:
-        Version string for folder naming
-    """
-    # Sanitize app name (lowercase, no special chars except dash/underscore)
-    sanitized_name = "".join(
-        c if c.isalnum() or c in "-_" else "" for c in app_name.lower()
-    )
-    return f"{sanitized_name}-{tag_name}"
-
-
 def check_sources_exist(config: AppConfig) -> bool:
     """Check if sources for the current version already exist.
 
@@ -118,9 +99,7 @@ def check_sources_exist(config: AppConfig) -> bool:
     if not config.version:
         return False
 
-    version_string = get_version_string(config.name, config.version)
-    sources_path = Path(config.path).expanduser() / version_string
-    return sources_path.is_dir()
+    return config.sources_path.is_dir()
 
 
 def download_and_extract_sources(
@@ -155,14 +134,13 @@ def download_and_extract_sources(
     proxies = proxy_settings.to_dict() if proxy_settings else None
 
     # Prepare target directory
-    version_string = get_version_string(config.name, tag_name)
-    target_path = Path(config.path).expanduser() / version_string
+    target_path = config.get_sources_path(tag_name)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         logger.info(f"Downloading sources from {url}")
         if progress_callback:
-            progress_callback(0, 0, f"Downloading {version_string}...")
+            progress_callback(0, 0, f"Downloading {target_path.name}...")
 
         response = requests.get(url, proxies=proxies, timeout=timeout, stream=True)
         response.raise_for_status()
@@ -178,7 +156,7 @@ def download_and_extract_sources(
             buffer.write(chunk)
             downloaded += len(chunk)
             if progress_callback:
-                progress_callback(downloaded, total_size, f"Downloading {version_string}...")
+                progress_callback(downloaded, total_size, f"Downloading {target_path.name}...")
 
         buffer.seek(0)
 
@@ -193,7 +171,7 @@ def download_and_extract_sources(
     try:
         logger.info(f"Extracting sources to {target_path}")
         if progress_callback:
-            progress_callback(0, 0, f"Extracting {version_string}...")
+            progress_callback(0, 0, f"Extracting {target_path.name}...")
 
         with zipfile.ZipFile(buffer, "r") as zf:
             # GitHub/GitLab archives have a root folder, we need to extract contents
@@ -258,10 +236,9 @@ def update_sources(
             progress_callback(0, 0, "Checking for updates...")
 
         latest_tag = fetch_latest_tag(config, proxy_settings)
-        version_string = get_version_string(config.name, latest_tag)
 
         # Check if sources exist
-        sources_path = Path(config.path).expanduser() / version_string
+        sources_path = config.get_sources_path(latest_tag)
         if sources_path.is_dir():
             if config.version == latest_tag:
                 logger.info(f"Already up to date: {latest_tag}")
@@ -274,7 +251,7 @@ def update_sources(
                 return False, latest_tag
 
         # Download new sources
-        logger.info(f"Sources not found, downloading: {version_string}")
+        logger.info(f"Sources not found, downloading: {sources_path.name}")
         download_and_extract_sources(
             config, latest_tag, proxy_settings, progress_callback
         )
@@ -290,12 +267,11 @@ def update_sources(
             raise UpdaterError("auto_update is false but no version is specified")
 
         tag_name = config.version
-        version_string = get_version_string(config.name, tag_name)
 
         # Check if sources exist, download if not
-        sources_path = Path(config.path).expanduser() / version_string
+        sources_path = config.get_sources_path(tag_name)
         if not sources_path.is_dir():
-            logger.info(f"Sources not found, downloading: {version_string}")
+            logger.info(f"Sources not found, downloading: {sources_path.name}")
             download_and_extract_sources(
                 config, tag_name, proxy_settings, progress_callback
             )
