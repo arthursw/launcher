@@ -121,6 +121,7 @@ class LauncherWorker:
                 return ProxySettings(
                     http=data.get("http"),
                     https=data.get("https"),
+                    ssl_cert_file=data.get("ssl_cert_file"),
                 )
         except queue.Empty:
             logger.warning("Proxy settings request timed out")
@@ -159,7 +160,11 @@ class LauncherWorker:
         """
         # Check config first
         assert self._config is not None, "Config not loaded"
-        if self._config.proxy_servers.http or self._config.proxy_servers.https:
+        if (
+            self._config.proxy_servers.http
+            or self._config.proxy_servers.https
+            or self._config.proxy_servers.ssl_cert_file
+        ):
             self._log("Using proxy settings from config")
             return self._config.proxy_servers
 
@@ -225,7 +230,7 @@ class LauncherWorker:
             # Set proxy if configured
             proxy = self._get_proxy_settings()
             if proxy:
-                self._env_manager.set_proxies(proxy.http, proxy.https)
+                self._env_manager.set_proxies(proxy.http, proxy.https, proxy.ssl_cert_file)
 
             # Check for updates and download sources
             self._log("Checking for updates...")

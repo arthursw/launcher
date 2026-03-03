@@ -134,6 +134,7 @@ class BaseGUI(ABC):
         request_id: str,
         http_proxy: Optional[str],
         https_proxy: Optional[str],
+        ssl_cert_file: Optional[str] = None,
     ) -> None:
         """Submit proxy settings response to worker.
 
@@ -141,11 +142,16 @@ class BaseGUI(ABC):
             request_id: Request ID from the proxy_required event
             http_proxy: HTTP proxy URL or None
             https_proxy: HTTPS proxy URL or None
+            ssl_cert_file: Path to a custom CA certificate file or None
         """
         response = GUIResponse(
             type=ResponseType.PROXY_SETTINGS,
             request_id=request_id,
-            data={"http": http_proxy, "https": https_proxy},
+            data={
+                "http": http_proxy,
+                "https": https_proxy,
+                "ssl_cert_file": ssl_cert_file,
+            },
         )
         self.response_queue.put(response)
 

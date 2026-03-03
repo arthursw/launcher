@@ -2,7 +2,7 @@
 
 import queue
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from typing import Optional
 
 from .base import BaseGUI
@@ -15,30 +15,52 @@ class ProxyDialog(simpledialog.Dialog):
     def __init__(self, parent, title: str = "Proxy Settings"):
         self.http_proxy: Optional[str] = None
         self.https_proxy: Optional[str] = None
+        self.ssl_cert_file: Optional[str] = None
         super().__init__(parent, title)
 
     def body(self, master):
         """Create dialog body."""
         ttk.Label(master, text="HTTP Proxy:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
         self.http_entry = ttk.Entry(master, width=40)
-        self.http_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.http_entry.grid(row=0, column=1, padx=5, pady=5, columnspan=2)
 
         ttk.Label(master, text="HTTPS Proxy:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
         self.https_entry = ttk.Entry(master, width=40)
-        self.https_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.https_entry.grid(row=1, column=1, padx=5, pady=5, columnspan=2)
+
+        ttk.Label(master, text="SSL Certificate:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
+        self.cert_entry = ttk.Entry(master, width=32)
+        self.cert_entry.grid(row=2, column=1, padx=5, pady=5)
+        ttk.Button(master, text="Browse...", command=self._browse_cert).grid(
+            row=2, column=2, padx=5, pady=5
+        )
 
         ttk.Label(
             master,
             text="Format: http://username:password@proxy.example.com:8080",
             font=("TkDefaultFont", 9, "italic"),
-        ).grid(row=2, column=0, columnspan=2, pady=5)
+        ).grid(row=3, column=0, columnspan=3, pady=5)
 
         return self.http_entry
+
+    def _browse_cert(self):
+        """Open a file dialog to select a certificate file."""
+        path = filedialog.askopenfilename(
+            title="Select SSL Certificate",
+            filetypes=[
+                ("Certificate files", "*.pem *.crt *.cer"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            self.cert_entry.delete(0, tk.END)
+            self.cert_entry.insert(0, path)
 
     def apply(self):
         """Handle OK button."""
         self.http_proxy = self.http_entry.get().strip() or None
         self.https_proxy = self.https_entry.get().strip() or None
+        self.ssl_cert_file = self.cert_entry.get().strip() or None
 
 
 class InitTimeoutDialog(simpledialog.Dialog):
@@ -195,7 +217,9 @@ class TkinterGUI(BaseGUI):
             return
 
         dialog = ProxyDialog(self._root)
-        self._submit_proxy_response(request_id, dialog.http_proxy, dialog.https_proxy)
+        self._submit_proxy_response(
+            request_id, dialog.http_proxy, dialog.https_proxy, dialog.ssl_cert_file
+        )
 
     def _show_init_timeout_dialog(self, request_id: str, message: str) -> None:
         """Show init timeout dialog."""

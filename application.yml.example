@@ -33,3 +33,4 @@ init_timeout: 30                                                   # Seconds to 
 # proxy_servers:
 #   http: http://username:password@proxy.corp.com:8080
 #   https: https://username:password@proxy.corp.com:8080
+#   ssl_cert_file: /path/to/corporate-ca.pem                          # Custom CA certificate for SSL-intercepting proxies

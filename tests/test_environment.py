@@ -121,6 +121,27 @@ class TestLauncherEnvironmentManager:
         })
 
     @patch('launcher.environment.EnvironmentManager')
+    def test_set_proxies_with_ssl_cert_file(self, mock_env_manager_class, monkeypatch):
+        """Test that set_proxies with ssl_cert_file sets environment variables."""
+        mock_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_instance
+
+        # Clear existing env vars
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+        manager = LauncherEnvironmentManager()
+        manager.set_proxies("http://proxy:8080", None, ssl_cert_file="/path/to/cert.pem")
+
+        import os
+        assert os.environ.get("SSL_CERT_FILE") == "/path/to/cert.pem"
+        assert os.environ.get("REQUESTS_CA_BUNDLE") == "/path/to/cert.pem"
+
+        # Clean up
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+    @patch('launcher.environment.EnvironmentManager')
     def test_exit(self, mock_env_manager_class):
         """Test exiting the environment manager."""
         mock_instance = MagicMock()

@@ -107,6 +107,20 @@ class TestGUIResponse:
         assert response.type == ResponseType.INIT_TIMEOUT_RESPONSE
         assert response.data["action"] == "wait"
 
+    def test_proxy_settings_response_with_ssl_cert_file(self):
+        """Test creating a proxy settings response with ssl_cert_file."""
+        response = GUIResponse(
+            type=ResponseType.PROXY_SETTINGS,
+            request_id="abc123",
+            data={
+                "http": "http://proxy:8080",
+                "https": None,
+                "ssl_cert_file": "/path/to/cert.pem",
+            }
+        )
+        assert response.type == ResponseType.PROXY_SETTINGS
+        assert response.data["ssl_cert_file"] == "/path/to/cert.pem"
+
 
 class TestLauncherWorker:
     """Tests for LauncherWorker class."""

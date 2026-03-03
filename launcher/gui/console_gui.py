@@ -64,7 +64,8 @@ class ConsoleGUI(BaseGUI):
         try:
             http_proxy = input("HTTP Proxy: ").strip() or None
             https_proxy = input("HTTPS Proxy: ").strip() or None
-            self._submit_proxy_response(request_id, http_proxy, https_proxy)
+            ssl_cert_file = input("SSL Certificate path (optional): ").strip() or None
+            self._submit_proxy_response(request_id, http_proxy, https_proxy, ssl_cert_file)
         except (EOFError, KeyboardInterrupt):
             print("\nCancelled")
             self._submit_proxy_response(request_id, None, None)

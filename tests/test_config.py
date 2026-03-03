@@ -36,6 +36,66 @@ class TestProxySettings:
             "https": "https://proxy:8080"
         }
 
+    def test_verify_returns_true_by_default(self):
+        """Test that verify returns True when no ssl_cert_file is set."""
+        proxy = ProxySettings()
+        assert proxy.verify is True
+
+    def test_verify_returns_cert_path_when_set(self):
+        """Test that verify returns the cert path when ssl_cert_file is set."""
+        proxy = ProxySettings(ssl_cert_file="/path/to/cert.pem")
+        assert proxy.verify == "/path/to/cert.pem"
+
+    def test_to_dict_excludes_ssl_cert_file(self):
+        """Test that to_dict() does not include ssl_cert_file."""
+        proxy = ProxySettings(
+            http="http://proxy:8080",
+            ssl_cert_file="/path/to/cert.pem"
+        )
+        result = proxy.to_dict()
+        assert "ssl_cert_file" not in result
+        assert result == {"http": "http://proxy:8080"}
+
+    def test_validate_ssl_cert_file_existing_pem(self, tmp_path):
+        """Test validation passes for existing .pem file."""
+        cert = tmp_path / "ca.pem"
+        cert.write_text("cert content")
+        proxy = ProxySettings(ssl_cert_file=str(cert))
+        assert proxy.validate_ssl_cert_file() is True
+
+    def test_validate_ssl_cert_file_existing_crt(self, tmp_path):
+        """Test validation passes for existing .crt file."""
+        cert = tmp_path / "ca.crt"
+        cert.write_text("cert content")
+        proxy = ProxySettings(ssl_cert_file=str(cert))
+        assert proxy.validate_ssl_cert_file() is True
+
+    def test_validate_ssl_cert_file_existing_cer(self, tmp_path):
+        """Test validation passes for existing .cer file."""
+        cert = tmp_path / "ca.cer"
+        cert.write_text("cert content")
+        proxy = ProxySettings(ssl_cert_file=str(cert))
+        assert proxy.validate_ssl_cert_file() is True
+
+    def test_validate_ssl_cert_file_missing_file(self):
+        """Test validation fails for missing file."""
+        proxy = ProxySettings(ssl_cert_file="/nonexistent/cert.pem")
+        with pytest.raises(FileNotFoundError, match="SSL certificate file not found"):
+            proxy.validate_ssl_cert_file()
+
+    def test_validate_ssl_cert_file_bad_extension(self, tmp_path):
+        """Test validation fails for unrecognised extension."""
+        cert = tmp_path / "ca.txt"
+        cert.write_text("cert content")
+        proxy = ProxySettings(ssl_cert_file=str(cert))
+        with pytest.raises(ValueError, match="Unrecognised certificate extension"):
+            proxy.validate_ssl_cert_file()
+
+    def test_validate_ssl_cert_file_none(self):
+        """Test validation passes when ssl_cert_file is None."""
+        proxy = ProxySettings()
+        assert proxy.validate_ssl_cert_file() is True
+
 
 class TestAppConfig:
     """Tests for AppConfig dataclass."""
@@ -186,6 +246,25 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="empty"):
             load_config(config_file)
 
+    def test_load_config_with_ssl_cert_file(self, tmp_path):
+        """Test loading config with ssl_cert_file in proxy_servers."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+            "proxy_servers": {
+                "http": "http://proxy:8080",
+                "ssl_cert_file": "/path/to/cert.pem",
+            }
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+        assert config.proxy_servers.http == "http://proxy:8080"
+        assert config.proxy_servers.ssl_cert_file == "/path/to/cert.pem"
+
     def test_config_save(self, tmp_path):
         """Test saving config back to file."""
         config_data = {
@@ -204,3 +283,25 @@ class TestLoadConfig:
         # Reload and verify
         reloaded = load_config(config_file)
         assert reloaded.version == "testapp-v2.0.0"
+
+    def test_config_save_roundtrip_ssl_cert_file(self, tmp_path):
+        """Test save + load roundtrip preserves ssl_cert_file."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+        config.proxy_servers = ProxySettings(
+            http="http://proxy:8080",
+            ssl_cert_file="/path/to/cert.pem",
+        )
+        config.save()
+
+        reloaded = load_config(config_file)
+        assert reloaded.proxy_servers.http == "http://proxy:8080"
+        assert reloaded.proxy_servers.ssl_cert_file == "/path/to/cert.pem"

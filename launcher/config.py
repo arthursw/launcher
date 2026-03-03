@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import yaml
+
+VALID_CERT_EXTENSIONS = (".pem", ".crt", ".cer")
 
 
 @dataclass
@@ -13,6 +15,40 @@ class ProxySettings:
 
     http: Optional[str] = None
     https: Optional[str] = None
+    ssl_cert_file: Optional[str] = None
+
+    @property
+    def verify(self) -> Union[str, bool]:
+        """Return the value for requests' ``verify`` parameter.
+
+        Returns the certificate path when set, otherwise ``True``
+        (default SSL verification).
+        """
+        if self.ssl_cert_file:
+            return self.ssl_cert_file
+        return True
+
+    def validate_ssl_cert_file(self) -> bool:
+        """Check that ``ssl_cert_file`` points to an existing file with a recognised extension.
+
+        Returns:
+            True if the file is valid.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            ValueError: If the extension is not recognised.
+        """
+        if not self.ssl_cert_file:
+            return True
+        path = Path(self.ssl_cert_file)
+        if not path.is_file():
+            raise FileNotFoundError(f"SSL certificate file not found: {self.ssl_cert_file}")
+        if path.suffix.lower() not in VALID_CERT_EXTENSIONS:
+            raise ValueError(
+                f"Unrecognised certificate extension '{path.suffix}'. "
+                f"Expected one of: {', '.join(VALID_CERT_EXTENSIONS)}"
+            )
+        return True
 
     def to_dict(self) -> dict:
         """Convert to dictionary for requests library."""
@@ -139,6 +175,8 @@ class AppConfig:
 
         # Add proxy settings if any are set
         proxy_dict = self.proxy_servers.to_dict()
+        if self.proxy_servers.ssl_cert_file:
+            proxy_dict["ssl_cert_file"] = self.proxy_servers.ssl_cert_file
         if proxy_dict:
             data["proxy_servers"] = proxy_dict
 
@@ -181,6 +219,7 @@ def load_config(config_path: Path) -> AppConfig:
     proxy_settings = ProxySettings(
         http=proxy_data.get("http"),
         https=proxy_data.get("https"),
+        ssl_cert_file=proxy_data.get("ssl_cert_file"),
     )
 
     # Create config instance

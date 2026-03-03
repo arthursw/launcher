@@ -115,13 +115,21 @@ class LauncherEnvironmentManager:
             logger.error(f"Failed to delete environment '{env_name}': {e}")
             raise EnvironmentError(f"Failed to delete environment: {e}") from e
 
-    def set_proxies(self, http_proxy: Optional[str], https_proxy: Optional[str]) -> None:
+    def set_proxies(
+        self,
+        http_proxy: Optional[str],
+        https_proxy: Optional[str],
+        ssl_cert_file: Optional[str] = None,
+    ) -> None:
         """Set proxy settings for the environment manager.
 
         Args:
             http_proxy: HTTP proxy URL
             https_proxy: HTTPS proxy URL
+            ssl_cert_file: Path to a custom CA certificate file
         """
+        import os as _os
+
         proxies = {}
         if http_proxy:
             proxies["http"] = http_proxy
@@ -131,6 +139,11 @@ class LauncherEnvironmentManager:
         if proxies:
             self._manager.set_proxies(proxies)
             logger.info(f"Proxies set: {proxies}")
+
+        if ssl_cert_file:
+            _os.environ["SSL_CERT_FILE"] = ssl_cert_file
+            _os.environ["REQUESTS_CA_BUNDLE"] = ssl_cert_file
+            logger.info(f"SSL certificate env vars set to: {ssl_cert_file}")
 
     def exit(self) -> None:
         """Clean up and exit all environments."""

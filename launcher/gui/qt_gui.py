@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QFormLayout,
     QMessageBox,
+    QFileDialog,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
@@ -37,6 +38,7 @@ class ProxyDialog(QDialog):
 
         self.http_proxy: Optional[str] = None
         self.https_proxy: Optional[str] = None
+        self.ssl_cert_file: Optional[str] = None
 
         layout = QVBoxLayout(self)
 
@@ -51,6 +53,16 @@ class ProxyDialog(QDialog):
         self.https_edit.setPlaceholderText("https://username:password@proxy.example.com:8080")
         form_layout.addRow("HTTPS Proxy:", self.https_edit)
 
+        # SSL certificate row
+        cert_layout = QHBoxLayout()
+        self.cert_edit = QLineEdit()
+        self.cert_edit.setPlaceholderText("/path/to/certificate.pem")
+        cert_layout.addWidget(self.cert_edit)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse_cert)
+        cert_layout.addWidget(browse_btn)
+        form_layout.addRow("SSL Certificate:", cert_layout)
+
         layout.addLayout(form_layout)
 
         # Hint
@@ -64,9 +76,21 @@ class ProxyDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _browse_cert(self):
+        """Open a file dialog to select a certificate file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select SSL Certificate",
+            "",
+            "Certificate files (*.pem *.crt *.cer);;All files (*.*)",
+        )
+        if path:
+            self.cert_edit.setText(path)
+
     def accept(self):
         self.http_proxy = self.http_edit.text().strip() or None
         self.https_proxy = self.https_edit.text().strip() or None
+        self.ssl_cert_file = self.cert_edit.text().strip() or None
         super().accept()
 
 
@@ -211,7 +235,9 @@ class QtGUI(BaseGUI):
 
         dialog = ProxyDialog(self._window)
         if dialog.exec() == QDialog.Accepted:
-            self._submit_proxy_response(request_id, dialog.http_proxy, dialog.https_proxy)
+            self._submit_proxy_response(
+                request_id, dialog.http_proxy, dialog.https_proxy, dialog.ssl_cert_file
+            )
         else:
             self._submit_proxy_response(request_id, None, None)
 

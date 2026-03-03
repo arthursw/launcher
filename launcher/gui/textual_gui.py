@@ -12,7 +12,7 @@ from .base import BaseGUI
 from ..worker import WorkerEvent, GUIResponse
 
 
-class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str]]]):
+class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str], Optional[str]]]):
     """Modal screen for proxy settings."""
 
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -24,6 +24,8 @@ class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str]]]):
             yield Input(placeholder="http://user:pass@proxy:8080", id="http-proxy")
             yield Label("HTTPS Proxy:")
             yield Input(placeholder="https://user:pass@proxy:8080", id="https-proxy")
+            yield Label("SSL Certificate (optional):")
+            yield Input(placeholder="/path/to/certificate.pem", id="ssl-cert")
             with Horizontal(id="proxy-buttons"):
                 yield Button("OK", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
@@ -32,12 +34,13 @@ class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str]]]):
         if event.button.id == "ok":
             http = self.query_one("#http-proxy", Input).value.strip() or None
             https = self.query_one("#https-proxy", Input).value.strip() or None
-            self.dismiss((http, https))
+            ssl_cert = self.query_one("#ssl-cert", Input).value.strip() or None
+            self.dismiss((http, https, ssl_cert))
         else:
-            self.dismiss((None, None))
+            self.dismiss((None, None, None))
 
     def action_cancel(self) -> None:
-        self.dismiss((None, None))
+        self.dismiss((None, None, None))
 
 
 class InitTimeoutScreen(ModalScreen[str]):
@@ -185,15 +188,15 @@ class LauncherApp(App):
             self.query_one("#log", RichLog).write("[green]Launcher complete. Application is running.[/green]")
             self.query_one("#close", Button).disabled = False
 
-    def _on_proxy_result(self, result: tuple[Optional[str], Optional[str]]) -> None:
+    def _on_proxy_result(self, result: tuple[Optional[str], Optional[str], Optional[str]]) -> None:
         """Handle proxy dialog result."""
         from ..worker import GUIResponse, ResponseType
 
-        http, https = result
+        http, https, ssl_cert = result
         response = GUIResponse(
             type=ResponseType.PROXY_SETTINGS,
             request_id=self._current_request_id or "",
-            data={"http": http, "https": https},
+            data={"http": http, "https": https, "ssl_cert_file": ssl_cert},
         )
         self.response_queue.put(response)
 

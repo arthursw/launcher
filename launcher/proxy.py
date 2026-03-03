@@ -12,6 +12,24 @@ from .config import ProxySettings
 
 logger = logging.getLogger(__name__)
 
+_SSL_CERT_ENV_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+def get_ssl_cert_from_environment() -> Optional[str]:
+    """Get SSL certificate file path from environment variables.
+
+    Checks SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE (in that order).
+
+    Returns:
+        Path to certificate file if found and exists, None otherwise
+    """
+    for var in _SSL_CERT_ENV_VARS:
+        value = os.environ.get(var)
+        if value and Path(value).is_file():
+            logger.info(f"Found SSL certificate from {var}: {value}")
+            return value
+    return None
+
 
 def _get_conda_config_paths() -> list[Path]:
     """Get all possible conda/mamba configuration file paths.
@@ -119,6 +137,9 @@ def _get_conda_config_paths() -> list[Path]:
 def _parse_proxy_from_yaml(path: Path) -> Optional[ProxySettings]:
     """Parse proxy settings from a YAML config file.
 
+    Reads ``proxy_servers`` for HTTP/HTTPS proxy URLs, and ``ssl_verify``
+    for a custom CA certificate path (string pointing to an existing file).
+
     Args:
         path: Path to the config file
 
@@ -132,14 +153,25 @@ def _parse_proxy_from_yaml(path: Path) -> Optional[ProxySettings]:
         if not data:
             return None
 
+        http_proxy = None
+        https_proxy = None
+        ssl_cert_file = None
+
         # Check for proxy_servers section
         proxy_servers = data.get("proxy_servers", {})
         if proxy_servers:
             http_proxy = proxy_servers.get("http")
             https_proxy = proxy_servers.get("https")
-            if http_proxy or https_proxy:
-                logger.info(f"Found proxy settings in {path}")
-                return ProxySettings(http=http_proxy, https=https_proxy)
+
+        # Check ssl_verify — only use it if it's a string path to an existing file
+        ssl_verify = data.get("ssl_verify")
+        if isinstance(ssl_verify, str) and Path(ssl_verify).is_file():
+            ssl_cert_file = ssl_verify
+            logger.info(f"Found ssl_verify certificate in {path}: {ssl_verify}")
+
+        if http_proxy or https_proxy or ssl_cert_file:
+            logger.info(f"Found proxy/SSL settings in {path}")
+            return ProxySettings(http=http_proxy, https=https_proxy, ssl_cert_file=ssl_cert_file)
 
         return None
     except Exception as e:
@@ -198,17 +230,19 @@ def detect_proxy_settings() -> Optional[ProxySettings]:
 def get_proxy_from_environment() -> Optional[ProxySettings]:
     """Get proxy settings from environment variables.
 
-    Checks HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy.
+    Checks HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy for proxy URLs
+    and SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE for certificate path.
 
     Returns:
         ProxySettings if found, None otherwise
     """
     http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
     https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    ssl_cert_file = get_ssl_cert_from_environment()
 
-    if http_proxy or https_proxy:
-        logger.info("Found proxy settings in environment variables")
-        return ProxySettings(http=http_proxy, https=https_proxy)
+    if http_proxy or https_proxy or ssl_cert_file:
+        logger.info("Found proxy/SSL settings in environment variables")
+        return ProxySettings(http=http_proxy, https=https_proxy, ssl_cert_file=ssl_cert_file)
 
     return None
 
@@ -217,16 +251,23 @@ def discover_proxy_settings() -> Optional[ProxySettings]:
     """Discover proxy settings from all sources.
 
     Checks in order:
-    1. Environment variables
+    1. Environment variables (proxy URLs + SSL cert)
     2. Conda/mamba config files
+
+    Environment variables take priority for proxy URLs, but ``ssl_cert_file``
+    from conda configs is used as a fallback if the env result is missing it.
 
     Returns:
         ProxySettings if found from any source, None otherwise
     """
     # Try environment variables first
-    result = get_proxy_from_environment()
-    if result:
-        return result
+    env_result = get_proxy_from_environment()
+    conda_result = detect_proxy_settings()
 
-    # Try conda/mamba configs
-    return detect_proxy_settings()
+    if env_result:
+        # Fill in ssl_cert_file from conda if env doesn't have one
+        if not env_result.ssl_cert_file and conda_result and conda_result.ssl_cert_file:
+            env_result.ssl_cert_file = conda_result.ssl_cert_file
+        return env_result
+
+    return conda_result

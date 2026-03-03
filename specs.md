@@ -27,6 +27,7 @@ init_timeout: 30                                                         # The t
 proxy_servers:                                                           # The proxy settings to use if behind a proxy (undefined by default, and set by the user if necessary)
   http: http://username:password@corp.com:8080
   https: https://username:password@corp.com:8080
+  ssl_cert_file: /path/to/corporate-ca.pem                               # Custom CA certificate for SSL-intercepting proxies (optional)
 ```
 
 The `repository` attribute allows simplifying configuration by automatically inferring the API endpoints. Instead of specifying `api`, `releases_endpoint`, and `archive_endpoint` separately, you can provide a single `repository` attribute:
@@ -165,6 +166,28 @@ condaConfigurations += [
 ```
 
 If there are no proxy settings found (or none is working), the launcher opens a simple dialog for the user to enter the proxy settings. Once the user enters its proxy settings, the launcher saves them in `application.yml`, and continue.
+
+### SSL Certificate support
+
+Many corporate environments use SSL/TLS-intercepting proxies that require a custom CA certificate file. The launcher supports this via the `ssl_cert_file` field.
+
+**Configuration (`application.yml`):**
+```yaml
+proxy_servers:
+  ssl_cert_file: /path/to/corporate-ca.pem
+```
+
+Accepted file extensions: `.pem`, `.crt`, `.cer`.
+
+**Environment variable discovery:** The launcher checks the following environment variables (in order): `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`. If any points to an existing file it is used automatically.
+
+**Conda/mamba discovery:** If a conda/mamba config file contains `ssl_verify` set to a file path (string), that path is used as the certificate file.
+
+**GUI:** All GUI dialogs (Tkinter, Qt, Textual, Console) include an optional SSL Certificate field so users can provide a certificate path interactively.
+
+When set, the certificate path is:
+- Passed as `verify=<path>` to all `requests.get()` calls
+- Exported as `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` environment variables so child processes (pixi, pip) inherit them
 
 ## GUI
 

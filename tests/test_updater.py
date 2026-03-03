@@ -140,6 +140,35 @@ class TestFetchLatestRelease:
         call_kwargs = mock_get.call_args[1]
         assert call_kwargs['proxies'] == {"http": "http://proxy:8080", "https": "https://proxy:8080"}
 
+    @patch('launcher.updater.requests.get')
+    def test_fetch_with_ssl_cert_file(self, mock_get, mock_config):
+        """Test fetching passes verify=cert_path when ssl_cert_file is set."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"tag_name": "v1.0.0"}
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        proxy = ProxySettings(ssl_cert_file="/path/to/cert.pem")
+        fetch_latest_release(mock_config, proxy_settings=proxy)
+
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs['verify'] == "/path/to/cert.pem"
+
+    @patch('launcher.updater.requests.get')
+    def test_fetch_without_ssl_cert_uses_true(self, mock_get, mock_config):
+        """Test fetching passes verify=True when no cert is set."""
+        mock_response = Mock()
+        mock_response.json.return_value = {"tag_name": "v1.0.0"}
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        fetch_latest_release(mock_config)
+
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs['verify'] is True
+
 
 class TestDownloadAndExtractSources:
     """Tests for download_and_extract_sources function."""

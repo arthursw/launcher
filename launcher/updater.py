@@ -59,10 +59,11 @@ def fetch_latest_release(
     url = f"{api_base}{releases_endpoint}"
 
     proxies = proxy_settings.to_dict() if proxy_settings else None
+    verify = proxy_settings.verify if proxy_settings else True
 
     try:
         logger.info(f"Fetching latest release from {url}")
-        response = requests.get(url, proxies=proxies, timeout=timeout)
+        response = requests.get(url, proxies=proxies, timeout=timeout, verify=verify)
         response.raise_for_status()
     except requests.exceptions.ConnectionError as e:
         raise NetworkError(f"Failed to connect to {url}: {e}") from e
@@ -132,6 +133,7 @@ def download_and_extract_sources(
     url = f"{api_base}{endpoint}"
 
     proxies = proxy_settings.to_dict() if proxy_settings else None
+    verify = proxy_settings.verify if proxy_settings else True
 
     # Prepare target directory
     target_path = config.get_sources_path(tag_name)
@@ -142,7 +144,7 @@ def download_and_extract_sources(
         if progress_callback:
             progress_callback(0, 0, f"Downloading {target_path.name}...")
 
-        response = requests.get(url, proxies=proxies, timeout=timeout, stream=True)
+        response = requests.get(url, proxies=proxies, timeout=timeout, stream=True, verify=verify)
         response.raise_for_status()
 
         # Get total size if available
