@@ -60,11 +60,11 @@ class TestAppConfig:
             main="main.py",
             path=".",
             api="https://api.example.com",
-            tags_endpoint="/tags",
+            releases_endpoint="/releases",
             archive_endpoint="/archive/{ref}"
         )
         assert config.api == "https://api.example.com"
-        assert config.tags_endpoint == "/tags"
+        assert config.releases_endpoint == "/releases"
 
     def test_config_validation_fails_without_repository_or_endpoints(self):
         """Test that config validation fails without repository or endpoints."""
@@ -92,7 +92,7 @@ class TestAppConfig:
             main="main.py",
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
-            version="testapp-v1.0.0"
+            version="v1.0.0"
         )
         assert config.sources_path == Path("/tmp/apps/testapp-v1.0.0")
 
@@ -103,7 +103,7 @@ class TestAppConfig:
             main="src/main.py",
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
-            version="testapp-v1.0.0"
+            version="v1.0.0"
         )
         assert config.main_script_path == Path("/tmp/apps/testapp-v1.0.0/src/main.py")
 

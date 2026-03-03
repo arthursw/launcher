@@ -168,6 +168,7 @@ def main(config_path: Optional[Path] = None) -> int:
 
     # Resolve config path (use parameter if provided, otherwise from CLI args)
     config_path = config_path.resolve() if config_path else args.config.resolve()
+    assert config_path is not None, "Config path must be provided"
     if not config_path.exists():
         print(f"Error: Configuration file not found: {config_path}", file=sys.stderr)
         return 1
@@ -188,6 +189,7 @@ def main(config_path: Optional[Path] = None) -> int:
     event_queue, response_queue = create_queues()
 
     # Create worker
+    assert config_path is not None, "Config path must be provided"
     worker = LauncherWorker(config_path, event_queue, response_queue)
 
     # Create GUI

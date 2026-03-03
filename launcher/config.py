@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -33,7 +33,7 @@ class AppConfig:
     path: str
     repository: Optional[str] = None
     api: Optional[str] = None
-    tags_endpoint: Optional[str] = None
+    releases_endpoint: Optional[str] = None
     archive_endpoint: Optional[str] = None
     version: Optional[str] = None
     auto_update: bool = True
@@ -49,9 +49,9 @@ class AppConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
-        if not self.repository and not (self.api and self.tags_endpoint and self.archive_endpoint):
+        if not self.repository and not (self.api and self.releases_endpoint and self.archive_endpoint):
             raise ValueError(
-                "Either 'repository' or all of 'api', 'tags_endpoint', and 'archive_endpoint' must be provided"
+                "Either 'repository' or all of 'api', 'releases_endpoint', and 'archive_endpoint' must be provided"
             )
 
     @property
@@ -106,7 +106,7 @@ class AppConfig:
         if not self._config_path:
             raise ValueError("Cannot save: config file path not set")
 
-        data = {
+        data: dict[str, Any] = {
             "name": self.name,
             "main": self.main,
             "path": self.path,
@@ -117,8 +117,8 @@ class AppConfig:
             data["repository"] = self.repository
         if self.api:
             data["api"] = self.api
-        if self.tags_endpoint:
-            data["tags_endpoint"] = self.tags_endpoint
+        if self.releases_endpoint:
+            data["releases_endpoint"] = self.releases_endpoint
         if self.archive_endpoint:
             data["archive_endpoint"] = self.archive_endpoint
         if self.version:
@@ -190,7 +190,7 @@ def load_config(config_path: Path) -> AppConfig:
         path=data["path"],
         repository=data.get("repository"),
         api=data.get("api"),
-        tags_endpoint=data.get("tags_endpoint"),
+        releases_endpoint=data.get("releases_endpoint"),
         archive_endpoint=data.get("archive_endpoint"),
         version=data.get("version"),
         auto_update=data.get("auto_update", True),

@@ -9,8 +9,7 @@ from unittest.mock import Mock, patch, MagicMock
 
 from launcher.config import AppConfig, ProxySettings
 from launcher.updater import (
-    fetch_latest_tag,
-    get_version_string,
+    fetch_latest_release,
     check_sources_exist,
     download_and_extract_sources,
     NetworkError,
@@ -30,29 +29,6 @@ def mock_config():
     )
 
 
-class TestGetVersionString:
-    """Tests for get_version_string function."""
-
-    def test_basic_version_string(self):
-        """Test basic version string generation."""
-        result = get_version_string("MyApp", "v1.0.0")
-        assert result == "myapp-v1.0.0"
-
-    def test_version_string_with_special_chars(self):
-        """Test version string with special characters in app name."""
-        result = get_version_string("My App!", "v1.0.0")
-        assert result == "myapp-v1.0.0"
-
-    def test_version_string_preserves_dashes(self):
-        """Test that dashes in app name are preserved."""
-        result = get_version_string("my-app", "v1.0.0")
-        assert result == "my-app-v1.0.0"
-
-    def test_version_string_preserves_underscores(self):
-        """Test that underscores in app name are preserved."""
-        result = get_version_string("my_app", "v1.0.0")
-        assert result == "my_app-v1.0.0"
-
 
 class TestCheckSourcesExist:
     """Tests for check_sources_exist function."""
@@ -60,9 +36,9 @@ class TestCheckSourcesExist:
     def test_sources_exist(self, tmp_path, mock_config):
         """Test when sources directory exists."""
         mock_config.path = str(tmp_path)
-        mock_config.version = "testapp-v1.0.0"
+        mock_config.version = "v1.0.0"
 
-        # Create the sources directory
+        # Create the sources directory (app name is sanitized: "TestApp" -> "testapp")
         sources_dir = tmp_path / "testapp-v1.0.0"
         sources_dir.mkdir()
 
@@ -81,33 +57,54 @@ class TestCheckSourcesExist:
         assert check_sources_exist(mock_config) is False
 
 
-class TestFetchLatestTag:
-    """Tests for fetch_latest_tag function."""
+class TestFetchLatestRelease:
+    """Tests for fetch_latest_release function."""
 
     @patch('launcher.updater.requests.get')
-    def test_fetch_github_tags(self, mock_get, mock_config):
-        """Test fetching tags from GitHub API."""
+    def test_fetch_github_latest_release(self, mock_get, mock_config):
+        """Test fetching latest release from GitHub API."""
         mock_response = Mock()
+        # GitHub /repos/{owner}/{repo}/releases/latest returns a single object
+        mock_response.json.return_value = {
+            "tag_name": "v2.0.0",
+            "name": "Release v2.0.0",
+        }
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        result = fetch_latest_release(mock_config)
+        assert result == "v2.0.0"
+
+    @patch('launcher.updater.requests.get')
+    def test_fetch_gitlab_releases(self, mock_get):
+        """Test fetching releases from GitLab API (list response)."""
+        from launcher.config import AppConfig
+        mock_config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path="/tmp/test_apps",
+            repository="git@gitlab.com:owner/repo.git"
+        )
+        mock_response = Mock()
+        # GitLab /projects/{id}/releases returns a list of releases sorted by released_at
         mock_response.json.return_value = [
-            {"name": "v2.0.0"},
-            {"name": "v1.0.0"},
+            {"tag_name": "v2.0.0", "name": "Release v2.0.0"},
+            {"tag_name": "v1.0.0", "name": "Release v1.0.0"},
         ]
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        result = fetch_latest_tag(mock_config)
+        result = fetch_latest_release(mock_config)
         assert result == "v2.0.0"
 
     @patch('launcher.updater.requests.get')
-    def test_fetch_no_tags(self, mock_get, mock_config):
-        """Test error when no tags found."""
-        mock_response = Mock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+    def test_fetch_no_release(self, mock_get, mock_config):
+        """Test error when no release found (GitHub returns 404)."""
+        import requests
+        mock_get.side_effect = requests.exceptions.HTTPError("404 Not Found")
 
-        with pytest.raises(UpdaterError, match="No tags found"):
-            fetch_latest_tag(mock_config)
+        with pytest.raises(NetworkError, match="HTTP error"):
+            fetch_latest_release(mock_config)
 
     @patch('launcher.updater.requests.get')
     def test_fetch_connection_error(self, mock_get, mock_config):
@@ -116,7 +113,7 @@ class TestFetchLatestTag:
         mock_get.side_effect = requests.exceptions.ConnectionError("Connection failed")
 
         with pytest.raises(NetworkError, match="Failed to connect"):
-            fetch_latest_tag(mock_config)
+            fetch_latest_release(mock_config)
 
     @patch('launcher.updater.requests.get')
     def test_fetch_timeout_error(self, mock_get, mock_config):
@@ -125,18 +122,18 @@ class TestFetchLatestTag:
         mock_get.side_effect = requests.exceptions.Timeout()
 
         with pytest.raises(NetworkError, match="timed out"):
-            fetch_latest_tag(mock_config)
+            fetch_latest_release(mock_config)
 
     @patch('launcher.updater.requests.get')
     def test_fetch_with_proxy(self, mock_get, mock_config):
         """Test fetching with proxy settings."""
         mock_response = Mock()
-        mock_response.json.return_value = [{"name": "v1.0.0"}]
+        mock_response.json.return_value = {"tag_name": "v1.0.0"}
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
         proxy = ProxySettings(http="http://proxy:8080", https="https://proxy:8080")
-        result = fetch_latest_tag(mock_config, proxy_settings=proxy)
+        result = fetch_latest_release(mock_config, proxy_settings=proxy)
 
         # Verify proxy was passed to requests
         mock_get.assert_called_once()

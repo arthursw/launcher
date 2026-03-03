@@ -16,7 +16,7 @@ class RepositoryInfo:
     owner: str
     repo: str
     api_base: str
-    tags_endpoint: str
+    releases_endpoint: str
     archive_endpoint: str  # Contains {ref} placeholder
 
 
@@ -85,7 +85,7 @@ def _github_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
     """Create GitHub API endpoints.
 
     GitHub API:
-        - Tags: GET /repos/{owner}/{repo}/tags
+        - Releases: GET /repos/{owner}/{repo}/releases/latest
         - Archive: GET /repos/{owner}/{repo}/zipball/{ref}
     """
     # Use api.github.com for github.com, otherwise use host/api/v3
@@ -99,7 +99,7 @@ def _github_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
         owner=owner,
         repo=repo,
         api_base=api_base,
-        tags_endpoint=f"/repos/{owner}/{repo}/tags",
+        releases_endpoint=f"/repos/{owner}/{repo}/releases/latest",
         archive_endpoint=f"/repos/{owner}/{repo}/zipball/{{ref}}",
     )
 
@@ -108,7 +108,7 @@ def _gitlab_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
     """Create GitLab API endpoints.
 
     GitLab API:
-        - Tags: GET /projects/{id}/repository/tags
+        - Releases: GET /projects/{id}/releases (sorted by released_at)
         - Archive: GET /projects/{id}/repository/archive.zip?sha={ref}
 
     The project ID is URL-encoded as owner%2Frepo
@@ -127,7 +127,7 @@ def _gitlab_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
         owner=owner,
         repo=repo,
         api_base=api_base,
-        tags_endpoint=f"/projects/{project_id}/repository/tags",
+        releases_endpoint=f"/projects/{project_id}/releases",
         archive_endpoint=f"/projects/{project_id}/repository/archive.zip?sha={{ref}}",
     )
 
@@ -139,14 +139,14 @@ def get_api_endpoints(config: AppConfig) -> tuple[str, str, str]:
         config: Application configuration
 
     Returns:
-        Tuple of (api_base, tags_endpoint, archive_endpoint)
+        Tuple of (api_base, releases_endpoint, archive_endpoint)
 
     Raises:
         ValueError: If endpoints cannot be determined
     """
     # If all endpoints are explicitly provided, use them
-    if config.api and config.tags_endpoint and config.archive_endpoint:
-        return config.api.rstrip("/"), config.tags_endpoint, config.archive_endpoint
+    if config.api and config.releases_endpoint and config.archive_endpoint:
+        return config.api.rstrip("/"), config.releases_endpoint, config.archive_endpoint
 
     # If repository URL is provided, parse it
     if config.repository:
@@ -154,9 +154,9 @@ def get_api_endpoints(config: AppConfig) -> tuple[str, str, str]:
 
         # Allow explicit overrides
         api_base = config.api.rstrip("/") if config.api else repo_info.api_base
-        tags_endpoint = config.tags_endpoint or repo_info.tags_endpoint
+        releases_endpoint = config.releases_endpoint or repo_info.releases_endpoint
         archive_endpoint = config.archive_endpoint or repo_info.archive_endpoint
 
-        return api_base, tags_endpoint, archive_endpoint
+        return api_base, releases_endpoint, archive_endpoint
 
-    raise ValueError("Cannot determine API endpoints: neither repository nor api/tags_endpoint/archive_endpoint provided")
+    raise ValueError("Cannot determine API endpoints: neither repository nor api/releases_endpoint/archive_endpoint provided")

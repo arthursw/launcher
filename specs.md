@@ -11,9 +11,9 @@ With this launcher, it will be extremely easy for a developper to ship his app: 
 The `application.yml` will look as follow:
 ```yaml
 name: ExampleApp                                                         # The name of the application (used for the environment name)
-repository: git@github.com:owner/exampleapp.git                          # The git repository URL (optional if api, tags_endpoint, and archive_endpoint are provided)
-api: https://api.github.com/                                             # The API URL to get tags and sources (optional if repository is provided)
-tags_endpoint: /repos/owner/exampleapp/git/tags                          # The API endpoint to get the list of tags (optional if repository is provided)
+repository: git@github.com:owner/exampleapp.git                          # The git repository URL (optional if api, releases_endpoint, and archive_endpoint are provided)
+api: https://api.github.com/                                             # The API URL to get releases and sources (optional if repository is provided)
+releases_endpoint: /repos/owner/exampleapp/releases/latest               # The API endpoint to get the latest release (optional if repository is provided)
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py                                                            # The main script to execute in the sources
 path: "."                                                                # The directory in which to extract the sources (could be "~/Applications/")
@@ -29,7 +29,7 @@ proxy_servers:                                                           # The p
   https: https://username:password@corp.com:8080
 ```
 
-The `repository` attribute allows simplifying configuration by automatically inferring the API endpoints. Instead of specifying `api`, `tags_endpoint`, and `archive_endpoint` separately, you can provide a single `repository` attribute:
+The `repository` attribute allows simplifying configuration by automatically inferring the API endpoints. Instead of specifying `api`, `releases_endpoint`, and `archive_endpoint` separately, you can provide a single `repository` attribute:
 
 - The launcher will parse the repository URL and infer the API endpoints for GitHub, GitLab, or generic git hosts
 - Supported formats:
@@ -38,6 +38,12 @@ The `repository` attribute allows simplifying configuration by automatically inf
   - The `.git` suffix is optional
 
 - If both `repository` and explicit endpoints are provided, the explicit endpoints take priority
+
+**Important note about releases:** The launcher uses the releases API to check for the latest version:
+- **GitHub:** Uses `/repos/{owner}/{repo}/releases/latest` endpoint
+- **GitLab:** Uses `/projects/{id}/releases` endpoint
+
+This means the repository must have at least one **release** for auto-update to work. The release must have a tag associated with it (the launcher will download the sources for that tag).
 
 Examples:
 
@@ -55,7 +61,7 @@ configuration: pyproject.toml
 ```yaml
 name: MyApp
 api: https://my-custom-api.com/ 
-tags_endpoint: /repos/owner/exampleapp/git/tags                          # The API endpoint to get the list of tags (optional if repository is provided)
+releases_endpoint: /repos/owner/exampleapp/releases/latest               # The API endpoint to get the latest release (optional if repository is provided)
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py
 path: "."
@@ -66,7 +72,7 @@ configuration: pyproject.toml
 
 This launcher will:
 - read the `application.yml` file located beside the launcher executable
-- if `auto_update`: check the latest tag from `api`/`tags_endpoint` and set the current version from this latest tag in the following format: `tagname`
+- if `auto_update`: check the latest release from `api`/`releases_endpoint` and set the current version from this latest release (which has a corresponding tag) in the following format: `tagname`
 - otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
 - in all cases: check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
 - if the sources do not exist: download them from the `archive_endpoint` and extract them in the `path`
@@ -109,7 +115,7 @@ For information purpose, the wetlands library is symlkinked at the root : you ca
 
 ## Proxy settings
 
-The launcher will need to access the internet to get the latest tags and sources. If it is behind a proxy, it might not work. If it does not work, the launcher will check the conda / mamba proxy settings in the following files:
+The launcher will need to access the internet to get the latest releases and sources. If it is behind a proxy, it might not work. If it does not work, the launcher will check the conda / mamba proxy settings in the following files:
 ```python
 condaConfigurations = ["/etc/conda/.condarc",
                     "/etc/conda/condarc",

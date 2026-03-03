@@ -21,7 +21,7 @@ class TestParseRepositoryUrl:
         assert result.owner == "owner"
         assert result.repo == "repo"
         assert result.api_base == "https://api.github.com"
-        assert result.tags_endpoint == "/repos/owner/repo/tags"
+        assert result.releases_endpoint == "/repos/owner/repo/releases/latest"
         assert result.archive_endpoint == "/repos/owner/repo/zipball/{ref}"
 
     def test_github_ssh_url_no_git_suffix(self):
@@ -56,7 +56,7 @@ class TestParseRepositoryUrl:
 
         # GitLab uses URL-encoded project path
         project_id = quote_plus("owner/repo")
-        assert result.tags_endpoint == f"/projects/{project_id}/repository/tags"
+        assert result.releases_endpoint == f"/projects/{project_id}/releases"
         assert result.archive_endpoint == f"/projects/{project_id}/repository/archive.zip?sha={{ref}}"
 
     def test_gitlab_https_url(self):
@@ -106,10 +106,10 @@ class TestGetApiEndpoints:
             path=".",
             repository="git@github.com:owner/repo.git"
         )
-        api_base, tags_endpoint, archive_endpoint = get_api_endpoints(config)
+        api_base, releases_endpoint, archive_endpoint = get_api_endpoints(config)
 
         assert api_base == "https://api.github.com"
-        assert tags_endpoint == "/repos/owner/repo/tags"
+        assert releases_endpoint == "/repos/owner/repo/releases/latest"
         assert archive_endpoint == "/repos/owner/repo/zipball/{ref}"
 
     def test_explicit_endpoints_override(self):
@@ -120,13 +120,13 @@ class TestGetApiEndpoints:
             path=".",
             repository="git@github.com:owner/repo.git",
             api="https://custom.api.com",
-            tags_endpoint="/custom/tags",
+            releases_endpoint="/custom/releases",
             archive_endpoint="/custom/archive/{ref}"
         )
-        api_base, tags_endpoint, archive_endpoint = get_api_endpoints(config)
+        api_base, releases_endpoint, archive_endpoint = get_api_endpoints(config)
 
         assert api_base == "https://custom.api.com"
-        assert tags_endpoint == "/custom/tags"
+        assert releases_endpoint == "/custom/releases"
         assert archive_endpoint == "/custom/archive/{ref}"
 
     def test_partial_override(self):
@@ -136,14 +136,14 @@ class TestGetApiEndpoints:
             main="main.py",
             path=".",
             repository="git@github.com:owner/repo.git",
-            tags_endpoint="/custom/tags"
+            releases_endpoint="/custom/releases"
         )
-        api_base, tags_endpoint, archive_endpoint = get_api_endpoints(config)
+        api_base, releases_endpoint, archive_endpoint = get_api_endpoints(config)
 
         # api_base from repository
         assert api_base == "https://api.github.com"
-        # tags_endpoint from override
-        assert tags_endpoint == "/custom/tags"
+        # releases_endpoint from override
+        assert releases_endpoint == "/custom/releases"
         # archive_endpoint from repository
         assert archive_endpoint == "/repos/owner/repo/zipball/{ref}"
 
@@ -154,14 +154,14 @@ class TestGetApiEndpoints:
             main="main.py",
             path=".",
             api="https://api.example.com/",
-            tags_endpoint="/tags",
+            releases_endpoint="/releases",
             archive_endpoint="/archive/{ref}"
         )
-        api_base, tags_endpoint, archive_endpoint = get_api_endpoints(config)
+        api_base, releases_endpoint, archive_endpoint = get_api_endpoints(config)
 
         # Trailing slash should be stripped from api
         assert api_base == "https://api.example.com"
-        assert tags_endpoint == "/tags"
+        assert releases_endpoint == "/releases"
         assert archive_endpoint == "/archive/{ref}"
 
     def test_missing_endpoints_raises_error(self):

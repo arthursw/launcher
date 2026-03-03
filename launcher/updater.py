@@ -36,12 +36,12 @@ class DownloadError(UpdaterError):
     pass
 
 
-def fetch_latest_tag(
+def fetch_latest_release(
     config: AppConfig,
     proxy_settings: Optional[ProxySettings] = None,
     timeout: int = 30,
 ) -> str:
-    """Fetch the latest tag from the repository.
+    """Fetch the latest release from the repository.
 
     Args:
         config: Application configuration
@@ -49,19 +49,19 @@ def fetch_latest_tag(
         timeout: Request timeout in seconds
 
     Returns:
-        The latest tag name (e.g., "v1.2.3")
+        The tag name corresponding to the latest release (e.g., "v1.2.3")
 
     Raises:
         NetworkError: If unable to connect to the API
-        UpdaterError: If no tags are found or response is invalid
+        UpdaterError: If no release is found or response is invalid
     """
-    api_base, tags_endpoint, _ = get_api_endpoints(config)
-    url = f"{api_base}{tags_endpoint}"
+    api_base, releases_endpoint, _ = get_api_endpoints(config)
+    url = f"{api_base}{releases_endpoint}"
 
     proxies = proxy_settings.to_dict() if proxy_settings else None
 
     try:
-        logger.info(f"Fetching tags from {url}")
+        logger.info(f"Fetching latest release from {url}")
         response = requests.get(url, proxies=proxies, timeout=timeout)
         response.raise_for_status()
     except requests.exceptions.ConnectionError as e:
@@ -69,22 +69,22 @@ def fetch_latest_tag(
     except requests.exceptions.Timeout as e:
         raise NetworkError(f"Request timed out: {url}") from e
     except requests.exceptions.HTTPError as e:
-        raise NetworkError(f"HTTP error {response.status_code}: {e}") from e
+        status_code = e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'
+        raise NetworkError(f"HTTP error {status_code}: {e}") from e
 
-    tags = response.json()
+    data = response.json()
 
-    if not tags:
-        raise UpdaterError(f"No tags found in repository")
+    # GitHub /repos/{owner}/{repo}/releases/latest returns a single object with 'tag_name' field
+    if isinstance(data, dict) and "tag_name" in data:
+        return data["tag_name"]
 
-    # GitHub returns tags as list of objects with 'name' field
-    # GitLab returns tags as list of objects with 'name' field too
-    if isinstance(tags, list) and len(tags) > 0:
-        if isinstance(tags[0], dict) and "name" in tags[0]:
-            return tags[0]["name"]
-        elif isinstance(tags[0], str):
-            return tags[0]
+    # GitLab /projects/{id}/releases returns a list of releases sorted by released_at
+    # Each release has a 'tag_name' field
+    if isinstance(data, list) and len(data) > 0:
+        if isinstance(data[0], dict) and "tag_name" in data[0]:
+            return data[0]["tag_name"]
 
-    raise UpdaterError(f"Unexpected tags response format: {type(tags)}")
+    raise UpdaterError(f"Unexpected release response format: {type(data)}")
 
 
 def check_sources_exist(config: AppConfig) -> bool:
@@ -231,11 +231,11 @@ def update_sources(
         DownloadError: If download fails
     """
     if config.auto_update:
-        # Fetch latest tag
+        # Fetch latest release
         if progress_callback:
             progress_callback(0, 0, "Checking for updates...")
 
-        latest_tag = fetch_latest_tag(config, proxy_settings)
+        latest_tag = fetch_latest_release(config, proxy_settings)
 
         # Check if sources exist
         sources_path = config.get_sources_path(latest_tag)

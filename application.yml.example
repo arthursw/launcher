@@ -12,7 +12,7 @@ repository: git@github.com:owner/exampleapp.git                    # SSH or HTTP
 
 # Option 2: Explicit API endpoints (use if repository inference doesn't work)
 # api: https://api.github.com/                                     # API base URL
-# tags_endpoint: /repos/owner/exampleapp/tags                      # Endpoint to get list of tags
+# releases_endpoint: /repos/owner/exampleapp/releases/latest       # Endpoint to get latest release
 # archive_endpoint: /repos/owner/exampleapp/zipball/{ref}          # Endpoint to download source archive
 
 # Version management

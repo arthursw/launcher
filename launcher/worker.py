@@ -133,6 +133,7 @@ class LauncherWorker:
         Returns:
             'wait', 'reinstall', or 'exit'
         """
+        assert self._config is not None, "Config not loaded"
         request_id = str(uuid.uuid4())
         self._send_event(WorkerEvent(
             type=EventType.INIT_TIMEOUT,
@@ -157,6 +158,7 @@ class LauncherWorker:
             ProxySettings to use, or None
         """
         # Check config first
+        assert self._config is not None, "Config not loaded"
         if self._config.proxy_servers.http or self._config.proxy_servers.https:
             self._log("Using proxy settings from config")
             return self._config.proxy_servers
@@ -200,6 +202,7 @@ class LauncherWorker:
                 raise
 
             # Save proxy to config
+            assert self._config is not None, "Config not loaded"
             self._config.proxy_servers = new_proxy
             self._config.save()
 
