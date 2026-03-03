@@ -47,7 +47,7 @@ class ScriptRunner:
         self.env_manager = env_manager
         self.env = env
         self._process: Optional[subprocess.Popen] = None
-        self._init_received = threading.Event()
+        self._process_logger = None
         self._output_lines: list[str] = []
         self._lock = threading.Lock()
 
@@ -102,50 +102,23 @@ class ScriptRunner:
 
         logger.info(f"Starting main script: {main_script_path}")
 
-        # Wrap the callback to capture output and check for init message
-        def wrapped_callback(line: str) -> None:
+        def on_output(line: str, _context: dict) -> None:
             with self._lock:
                 self._output_lines.append(line)
-
-            # Check for init message
-            if self.config.init_message and self.config.init_message in line:
-                logger.info(f"Init message received: {self.config.init_message}")
-                self._init_received.set()
-
             if output_callback:
                 output_callback(line)
 
-        # Use env.execute_commands as per specs.md
         self._process = self.env.execute_commands(
             commands=[f'python -u "{main_script_path}"'],
             wait=False,
         )
 
-        # Start a thread to read output using ProcessLogger
-        process_logger = self.env_manager.manager.get_process_logger(self._process)
-        if process_logger:
-            output_thread = threading.Thread(
-                target=self._read_output_from_logger,
-                args=(process_logger, wrapped_callback),
-                daemon=True,
-            )
-            output_thread.start()
+        # Subscribe to process output using ProcessLogger
+        self._process_logger = self.env_manager.get_process_logger(self._process)
+        if self._process_logger:
+            self._process_logger.subscribe(on_output, include_history=False)
 
         return self._process
-
-    def _read_output_from_logger(self, process_logger, callback: OutputCallback) -> None:
-        """Read process output using ProcessLogger.
-
-        Args:
-            process_logger: Wetlands ProcessLogger instance
-            callback: Callback to call for each line
-        """
-        try:
-            for line in process_logger:
-                if line:
-                    callback(line)
-        except Exception as e:
-            logger.error(f"Error reading process output: {e}")
 
     def wait_for_init(
         self,
@@ -168,11 +141,20 @@ class ScriptRunner:
             logger.info("No init message configured, skipping wait")
             return True
 
+        if not self._process_logger:
+            logger.warning("No process logger available, cannot wait for init message")
+            return False
+
         timeout = self.config.init_timeout
+        init_message = self.config.init_message
+
+        def init_predicate(line: str) -> bool:
+            return init_message in line
 
         while True:
-            # Wait for init message with timeout
-            if self._init_received.wait(timeout=timeout):
+            line = self._process_logger.wait_for_line(init_predicate, timeout=timeout)
+            if line:
+                logger.info(f"Init message received: {init_message}")
                 return True
 
             # Check if process has exited

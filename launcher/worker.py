@@ -250,6 +250,9 @@ class LauncherWorker:
             else:
                 self._log(f"Using version: {version}")
 
+            # Check if environment exists before creating
+            env_existed = self._env_manager.environment_exists(self._config.env_name)
+
             # Get or create environment
             self._log(f"Setting up environment: {self._config.env_name}")
             env = self._env_manager.get_or_create_environment(self._config)
@@ -258,8 +261,8 @@ class LauncherWorker:
             # Create runner
             self._runner = ScriptRunner(self._config, self._env_manager, env)
 
-            # Run install script if defined
-            if self._config.install:
+            # Run install script only if environment was just created
+            if self._config.install and not env_existed:
                 self._log("Running install script...")
                 if not self._runner.run_install_script():
                     raise Exception("Install script failed")

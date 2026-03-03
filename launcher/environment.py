@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+import subprocess
 from typing import TYPE_CHECKING, Optional
 
 from wetlands.environment_manager import EnvironmentManager
@@ -64,6 +65,17 @@ class LauncherEnvironmentManager:
         """
         env_path = self._manager.settings_manager.get_environment_path_from_name(env_name)
         return self._manager.environment_exists(env_path)
+
+    def get_environment_path(self, env_name: str) -> Path:
+        """Get the path to an environment.
+
+        Args:
+            env_name: The sanitized environment name
+
+        Returns:
+            Path to the environment
+        """
+        return self._manager.settings_manager.get_environment_path_from_name(env_name)
 
     def get_or_create_environment(
         self,
@@ -144,6 +156,17 @@ class LauncherEnvironmentManager:
             _os.environ["SSL_CERT_FILE"] = ssl_cert_file
             _os.environ["REQUESTS_CA_BUNDLE"] = ssl_cert_file
             logger.info(f"SSL certificate env vars set to: {ssl_cert_file}")
+
+    def get_process_logger(self, process: subprocess.Popen):
+        """Get the ProcessLogger for a running process.
+
+        Args:
+            process: The process
+
+        Returns:
+            The ProcessLogger instance, or None if not found
+        """
+        return self._manager.get_process_logger(process)
 
     def exit(self) -> None:
         """Clean up and exit all environments."""

@@ -13,6 +13,16 @@
             "justMyCode": false,
             "python": "/Users/amasson/Travail/launcher/.venv/bin/python3",
             "args": ["--config", "galaxy.yml"],
+        },
+        {
+            "name": "Main Galaxy",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main_galaxy.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/Users/amasson/Travail/launcher/.venv/bin/python3",
+            "args": [],
         }
     ]
 }
