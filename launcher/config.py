@@ -75,6 +75,7 @@ class AppConfig:
     auto_update: bool = True
     configuration: str = "pyproject.toml"
     install: Optional[str] = None
+    reinstall_on_update: bool = False
     gui_timeout: int = 3
     init_message: Optional[str] = None
     init_timeout: int = 30
@@ -166,6 +167,8 @@ class AppConfig:
         if self.install:
             data["install"] = self.install
 
+        data["reinstall_on_update"] = self.reinstall_on_update
+
         data["gui_timeout"] = self.gui_timeout
 
         if self.init_message:
@@ -235,6 +238,7 @@ def load_config(config_path: Path) -> AppConfig:
         auto_update=data.get("auto_update", True),
         configuration=data.get("configuration", "pyproject.toml"),
         install=data.get("install"),
+        reinstall_on_update=data.get("reinstall_on_update", False),
         gui_timeout=data.get("gui_timeout", 3),
         init_message=data.get("init_message"),
         init_timeout=data.get("init_timeout", 30),

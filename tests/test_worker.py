@@ -222,3 +222,175 @@ class TestLauncherWorker:
         # Should have received an error event
         error_events = [e for e in events if e.type == EventType.ERROR]
         assert len(error_events) > 0
+
+
+class TestReinstallOnUpdate:
+    """Tests for reinstall_on_update behavior."""
+
+    @pytest.fixture
+    def mock_config_with_reinstall(self, tmp_path):
+        """Create a mock config file with reinstall_on_update enabled."""
+        import yaml
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "install": "install.py",
+            "reinstall_on_update": True,
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        # Create the sources directory with main.py and install.py
+        sources_dir = tmp_path / "apps" / "testapp-v1.0.0"
+        sources_dir.mkdir(parents=True)
+        (sources_dir / "main.py").write_text("print('hello')")
+        (sources_dir / "install.py").write_text("print('install')")
+        (sources_dir / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+        return config_file
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_install_script_runs_when_env_created(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        mock_config_with_reinstall,
+        queues
+    ):
+        """Test install script runs when environment is first created."""
+        event_queue, response_queue = queues
+
+        # Mock update_sources to return updated=True (new sources downloaded)
+        mock_update_sources.return_value = (True, "testapp-v1.0.0")
+
+        # Mock environment manager - env does not exist
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = False
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+
+        # Mock runner
+        mock_runner = MagicMock()
+        mock_runner.run_install_script.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(mock_config_with_reinstall, event_queue, response_queue)
+        worker.start()
+
+        # Wait for worker to process
+        import time
+        time.sleep(0.5)
+
+        worker.stop()
+
+        # Install script should have been called since env didn't exist
+        mock_runner.run_install_script.assert_called_once()
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_install_script_runs_on_update_when_reinstall_on_update_enabled(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        mock_config_with_reinstall,
+        queues
+    ):
+        """Test install script runs on update when reinstall_on_update is true."""
+        event_queue, response_queue = queues
+
+        # Mock update_sources to return updated=True (new sources downloaded)
+        mock_update_sources.return_value = (True, "testapp-v1.0.0")
+
+        # Mock environment manager - env already exists
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+
+        # Mock runner
+        mock_runner = MagicMock()
+        mock_runner.run_install_script.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(mock_config_with_reinstall, event_queue, response_queue)
+        worker.start()
+
+        # Wait for worker to process
+        import time
+        time.sleep(0.5)
+
+        worker.stop()
+
+        # Install script should have been called since updated=True and reinstall_on_update=True
+        mock_runner.run_install_script.assert_called_once()
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_install_script_skipped_on_update_when_reinstall_on_update_disabled(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        tmp_path,
+        queues
+    ):
+        """Test install script skipped on update when reinstall_on_update is false."""
+        import yaml
+        event_queue, response_queue = queues
+
+        # Create config with reinstall_on_update disabled
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "install": "install.py",
+            "reinstall_on_update": False,  # Disabled
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        # Create the sources directory
+        sources_dir = tmp_path / "apps" / "testapp-v1.0.0"
+        sources_dir.mkdir(parents=True)
+        (sources_dir / "main.py").write_text("print('hello')")
+        (sources_dir / "install.py").write_text("print('install')")
+        (sources_dir / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+        # Mock update_sources to return updated=True (new sources downloaded)
+        mock_update_sources.return_value = (True, "testapp-v1.0.0")
+
+        # Mock environment manager - env already exists
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+
+        # Mock runner
+        mock_runner = MagicMock()
+        mock_runner.run_install_script.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(config_file, event_queue, response_queue)
+        worker.start()
+
+        # Wait for worker to process
+        import time
+        time.sleep(0.5)
+
+        worker.stop()
+
+        # Install script should NOT have been called since reinstall_on_update=False
+        mock_runner.run_install_script.assert_not_called()

@@ -261,9 +261,17 @@ class LauncherWorker:
             # Create runner
             self._runner = ScriptRunner(self._config, self._env_manager, env)
 
-            # Run install script only if environment was just created
-            if self._config.install and not env_existed:
-                self._log("Running install script...")
+            # Run install script if:
+            # - environment was just created, OR
+            # - new sources were downloaded and reinstall_on_update is enabled
+            should_run_install = self._config.install and (
+                not env_existed or (updated and self._config.reinstall_on_update)
+            )
+            if should_run_install:
+                if updated and self._config.reinstall_on_update and env_existed:
+                    self._log("Running install script (reinstall_on_update enabled)...")
+                else:
+                    self._log("Running install script...")
                 if not self._runner.run_install_script():
                     raise Exception("Install script failed")
 

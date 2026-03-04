@@ -112,6 +112,7 @@ class TestAppConfig:
         assert config.main == "main.py"
         assert config.auto_update is True
         assert config.configuration == "pyproject.toml"
+        assert config.reinstall_on_update is False  # Default value
 
     def test_minimal_config_with_endpoints(self):
         """Test minimal config with explicit endpoints."""
@@ -198,6 +199,7 @@ class TestLoadConfig:
             "version": "testapp-v1.0.0",
             "configuration": "requirements.txt",
             "install": "install.py",
+            "reinstall_on_update": True,
             "gui_timeout": 5,
             "init_message": "Ready",
             "init_timeout": 60,
@@ -215,6 +217,7 @@ class TestLoadConfig:
         assert config.version == "testapp-v1.0.0"
         assert config.configuration == "requirements.txt"
         assert config.install == "install.py"
+        assert config.reinstall_on_update is True
         assert config.gui_timeout == 5
         assert config.init_message == "Ready"
         assert config.init_timeout == 60
@@ -305,3 +308,21 @@ class TestLoadConfig:
         reloaded = load_config(config_file)
         assert reloaded.proxy_servers.http == "http://proxy:8080"
         assert reloaded.proxy_servers.ssl_cert_file == "/path/to/cert.pem"
+
+    def test_config_save_roundtrip_reinstall_on_update(self, tmp_path):
+        """Test save + load roundtrip preserves reinstall_on_update."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+        config.reinstall_on_update = True
+        config.save()
+
+        reloaded = load_config(config_file)
+        assert reloaded.reinstall_on_update is True

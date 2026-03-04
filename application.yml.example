@@ -23,6 +23,7 @@ auto_update: true                                                  # Auto-check 
 configuration: pyproject.toml                                      # Config file for dependencies
                                                                    # Supports: pyproject.toml, pixi.toml, environment.yml, requirements.txt
 # install: install.py                                              # Optional install script to run after env creation
+# reinstall_on_update: false                                       # Re-run install script when new sources are downloaded (default: false)
 
 # GUI and timing
 gui_timeout: 3                                                     # Seconds before showing GUI (0 = immediate)

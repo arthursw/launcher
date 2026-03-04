@@ -23,6 +23,16 @@
             "justMyCode": false,
             "python": "/Users/amasson/Travail/launcher/.venv/bin/python3",
             "args": [],
+        },
+        {
+            "name": "Debug Galaxy",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "apps/galaxy-desktop-26.0.3/launch_galaxy_desktop.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/Users/amasson/.launcher/wetlands/pixi/workspaces/Galaxy/.pixi/envs/default/bin/python3",
+            "args": [],
         }
     ]
 }

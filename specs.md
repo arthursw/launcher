@@ -21,6 +21,7 @@ version: v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of t
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
 install: install.py                                                      # The install script with additional install commands
+reinstall_on_update: false                                               # Whether to re-run the install script when new sources are downloaded (even if the environment already exists)
 gui_timeout: 3                                                           # The time (in seconds) before opening the GUI which displays what's happening
 init_message: "Initialized"                                              # The message confirming the app is initialized (so the app is installed properly)
 init_timeout: 30                                                         # The time (in seconds) before throwing an "Install error" when waiting the init message
@@ -83,6 +84,8 @@ This launcher will:
   - if the environment does not exists: 
     - create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a `pixi.toml`, `environment.yml` or `requirements.txt` file.)
     - run the python install script defined by the `install` attribute if any
+  - if the environment already exists but new sources were just downloaded and `reinstall_on_update` is true:
+    - run the python install script defined by the `install` attribute
 - run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
 - read the stdout and wait for the `init_message`: it will confirm the app is properly installed
 - if the `init_message` is not in the stdout for `init_timeout` seconds: ask the user to either delete the environment (to trigger a new installation when restarting the app) and exit, or just exit, or wait more.
