@@ -3,8 +3,8 @@
 
 import argparse
 import logging
+import os
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -12,6 +12,9 @@ from typing import Optional
 from launcher.config import load_config
 from launcher.worker import LauncherWorker, create_queues, EventType
 from launcher.gui.base import BaseGUI
+
+DEFAULT_CONFIG_NAME = "application.yml"
+CONFIG_ENV_VAR = "LAUNCHER_CONFIG"
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -109,7 +112,7 @@ def run_with_delayed_gui(
                 # Error before timeout, show error
                 print(f"Error: {event.message}", file=sys.stderr)
                 break
-        except:
+        except Exception:
             pass
 
     # If GUI was shown, it will handle cleanup
@@ -117,6 +120,66 @@ def run_with_delayed_gui(
     if not gui_shown:
         while worker.is_running():
             time.sleep(0.1)
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    """Return paths without duplicates while preserving order."""
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            result.append(resolved)
+    return result
+
+
+def _default_config_candidates() -> list[Path]:
+    """Return default config locations in the order the launcher should check."""
+    candidates = [Path.cwd() / DEFAULT_CONFIG_NAME]
+
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable).resolve()
+        executable_dir = executable.parent
+        app_name = executable.stem
+        bundle_dir = Path(__file__).resolve().parent
+
+        candidates.extend(
+            [
+                executable_dir / DEFAULT_CONFIG_NAME,
+                executable_dir / f"{app_name}.yml",
+                executable_dir / app_name / f"{app_name}.yml",
+                bundle_dir / DEFAULT_CONFIG_NAME,
+                bundle_dir / f"{app_name}.yml",
+                bundle_dir / app_name / f"{app_name}.yml",
+            ]
+        )
+    else:
+        candidates.append(Path(__file__).resolve().with_name(DEFAULT_CONFIG_NAME))
+
+    return _unique_paths(candidates)
+
+
+def find_config_path(config_path: Optional[Path] = None) -> tuple[Path, list[Path]]:
+    """Find the configuration file to use.
+
+    An explicit CLI or programmatic config path always wins. Without one, the
+    launcher checks an environment override, then sensible defaults for source
+    runs and PyInstaller bundles.
+    """
+    if config_path is not None:
+        return config_path.expanduser().resolve(), []
+
+    env_config = os.environ.get(CONFIG_ENV_VAR)
+    if env_config:
+        return Path(env_config).expanduser().resolve(), []
+
+    candidates = _default_config_candidates()
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate, candidates
+
+    return candidates[0], candidates
 
 
 def main(config_path: Optional[Path] = None) -> int:
@@ -135,7 +198,7 @@ def main(config_path: Optional[Path] = None) -> int:
     parser.add_argument(
         "--config", "-c",
         type=Path,
-        default=Path("application.yml"),
+        default=None,
         help="Path to application.yml config file (default: application.yml)",
     )
     parser.add_argument(
@@ -167,10 +230,13 @@ def main(config_path: Optional[Path] = None) -> int:
     logger = logging.getLogger(__name__)
 
     # Resolve config path (use parameter if provided, otherwise from CLI args)
-    config_path = config_path.resolve() if config_path else args.config.resolve()
+    config_path, config_candidates = find_config_path(config_path or args.config)
     assert config_path is not None, "Config path must be provided"
     if not config_path.exists():
         print(f"Error: Configuration file not found: {config_path}", file=sys.stderr)
+        if config_candidates:
+            checked = "\n  ".join(str(path) for path in config_candidates)
+            print(f"Checked:\n  {checked}", file=sys.stderr)
         return 1
 
     # Load config to get app name and gui_timeout
@@ -197,7 +263,10 @@ def main(config_path: Optional[Path] = None) -> int:
         gui = get_gui(gui_type, event_queue, response_queue, app_name)
     except ImportError as e:
         logger.error(f"Failed to import GUI: {e}")
-        print(f"Error: Failed to load {gui_type} GUI. Try a different --gui option.", file=sys.stderr)
+        print(
+            f"Error: Failed to load {gui_type} GUI. Try a different --gui option.",
+            file=sys.stderr,
+        )
         return 1
 
     # Run with appropriate strategy

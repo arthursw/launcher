@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Auto-updating application launcher with Python environment management"
 requires-python = ">=3.10"
 dependencies = [
+    "cryptography>=42.0",
+    "keyring>=24.0",
     "pyyaml>=6.0",
     "requests>=2.31",
     "toml>=0.10",

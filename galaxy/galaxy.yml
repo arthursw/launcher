@@ -1,0 +1,12 @@
+name: Galaxy
+main: launch_galaxy_desktop.py
+path: apps/
+repository: git@github.com:arthursw/galaxy.git
+version: desktop-26.0.3
+auto_update: true
+configuration: pyproject.toml
+install: install_desktop.py
+reinstall_on_update: true
+gui_timeout: 3
+init_message: Galaxy intialized
+init_timeout: 180
