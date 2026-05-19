@@ -7,13 +7,14 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from .config import AppConfig, ProxySettings, load_config
-from .environment import LauncherEnvironmentManager, EnvironmentError
+from .environment import LauncherEnvironmentManager, EnvironmentError, compute_dependency_hash
 from .proxy import discover_proxy_settings
 from .runner import ScriptRunner, InitTimeoutError
 from .updater import NetworkError, DownloadError, update_sources
+from .state import LauncherState
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,13 @@ class LauncherWorker:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._config: Optional[AppConfig] = None
+        self._state: Optional[LauncherState] = None
         self._env_manager: Optional[LauncherEnvironmentManager] = None
         self._runner: Optional[ScriptRunner] = None
+        self._completed = False
+        self._failed = False
+        self._error_message: Optional[str] = None
+        self._last_proxy_remember_password = False
 
     def _send_event(self, event: WorkerEvent) -> None:
         """Send an event to the GUI."""
@@ -99,6 +105,8 @@ class LauncherWorker:
     def _error(self, message: str) -> None:
         """Send an error event."""
         logger.error(message)
+        self._failed = True
+        self._error_message = message
         self._send_event(WorkerEvent(type=EventType.ERROR, message=message))
 
     def _request_proxy(self) -> Optional[ProxySettings]:
@@ -118,6 +126,7 @@ class LauncherWorker:
             response = self.response_queue.get(timeout=300)  # 5 minute timeout
             if response.type == ResponseType.PROXY_SETTINGS and response.request_id == request_id:
                 data = response.data
+                self._last_proxy_remember_password = bool(data.get("remember_password"))
                 return ProxySettings(
                     http=data.get("http"),
                     https=data.get("https"),
@@ -160,6 +169,12 @@ class LauncherWorker:
         """
         # Check config first
         assert self._config is not None, "Config not loaded"
+        if self._state:
+            state_proxy = self._state.proxy_settings()
+            if state_proxy:
+                self._log("Using proxy settings from runtime state")
+                return state_proxy
+
         if (
             self._config.proxy_servers.http
             or self._config.proxy_servers.https
@@ -206,14 +221,24 @@ class LauncherWorker:
             if not new_proxy:
                 raise
 
-            # Save proxy to config
-            assert self._config is not None, "Config not loaded"
-            self._config.proxy_servers = new_proxy
-            self._config.save()
+            # Save only runtime proxy metadata. Passwords are stored in the
+            # keychain only when the user opted in, otherwise they remain in memory.
+            if self._state:
+                self._state.remember_proxy_settings(
+                    new_proxy,
+                    remember_password=self._last_proxy_remember_password,
+                )
 
             # Retry with new proxy
             self._log(f"Retrying {operation} with new proxy settings")
             return func(*args, proxy_settings=new_proxy, **kwargs)
+
+    def _cleanup_after_failure(self) -> None:
+        """Terminate launcher-owned resources after a failed or cancelled launch."""
+        if self._runner:
+            self._runner.stop()
+        if self._env_manager:
+            self._env_manager.exit()
 
     def _run(self) -> None:
         """Main worker loop."""
@@ -221,6 +246,9 @@ class LauncherWorker:
             # Load configuration
             self._log("Loading configuration...")
             self._config = load_config(self.config_path)
+            self._state = LauncherState.for_app(self._config.name)
+            if self._config.auto_update and self._state.version:
+                self._config.version = self._state.version
             self._log(f"Loaded config for: {self._config.name}")
 
             # Initialize environment manager
@@ -243,6 +271,7 @@ class LauncherWorker:
                 update_sources,
                 self._config,
                 progress_callback=progress_callback,
+                state=self._state,
             )
 
             if updated:
@@ -252,6 +281,16 @@ class LauncherWorker:
 
             # Check if environment exists before creating
             env_existed = self._env_manager.environment_exists(self._config.env_name)
+            dependency_hash = compute_dependency_hash(self._config)
+            if (
+                env_existed
+                and self._state
+                and self._state.dependency_hash
+                and self._state.dependency_hash != dependency_hash
+            ):
+                self._log("Dependency inputs changed; recreating environment...")
+                self._env_manager.delete_environment(self._config.env_name)
+                env_existed = False
 
             # Get or create environment
             self._log(f"Setting up environment: {self._config.env_name}")
@@ -275,6 +314,11 @@ class LauncherWorker:
                 if not self._runner.run_install_script():
                     raise Exception("Install script failed")
 
+            if self._state:
+                self._state.version = version
+                self._state.dependency_hash = dependency_hash
+                self._state.save()
+
             # Start main script
             self._log("Starting application...")
             self._runner.start(
@@ -285,9 +329,11 @@ class LauncherWorker:
             if self._config.init_message:
                 self._log(f"Waiting for init message: {self._config.init_message}")
                 try:
-                    self._runner.wait_for_init(
+                    initialized = self._runner.wait_for_init(
                         timeout_callback=self._request_init_timeout_action
                     )
+                    if not initialized:
+                        raise InitTimeoutError("Application initialization could not be verified")
                     self._log("Application initialized successfully")
                 except InitTimeoutError as e:
                     if "reinstall" in str(e).lower():
@@ -300,6 +346,7 @@ class LauncherWorker:
                         raise
 
             # Complete
+            self._completed = True
             self._send_event(WorkerEvent(type=EventType.COMPLETE))
 
         except FileNotFoundError as e:
@@ -315,6 +362,9 @@ class LauncherWorker:
         except Exception as e:
             logger.exception("Unexpected error in worker")
             self._error(f"Unexpected error: {e}")
+        finally:
+            if self._failed or self._stop_event.is_set():
+                self._cleanup_after_failure()
 
     def start(self) -> None:
         """Start the worker thread."""
@@ -330,10 +380,10 @@ class LauncherWorker:
         """Stop the worker thread."""
         self._stop_event.set()
 
-        if self._runner:
+        if self._runner and not self._completed:
             self._runner.stop()
 
-        if self._env_manager:
+        if self._env_manager and not self._completed:
             self._env_manager.exit()
 
         if self._thread:
@@ -342,6 +392,21 @@ class LauncherWorker:
     def is_running(self) -> bool:
         """Check if the worker thread is running."""
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def completed(self) -> bool:
+        """Whether the launcher completed and transferred ownership to the app."""
+        return self._completed
+
+    @property
+    def failed(self) -> bool:
+        """Whether the worker failed."""
+        return self._failed
+
+    @property
+    def error_message(self) -> Optional[str]:
+        """Return the worker error message, if any."""
+        return self._error_message
 
 
 def create_queues() -> tuple[queue.Queue[WorkerEvent], queue.Queue[GUIResponse]]:

@@ -1,5 +1,6 @@
 """Environment management wrapper around Wetlands library."""
 
+import hashlib
 import logging
 from pathlib import Path
 import subprocess
@@ -12,6 +13,16 @@ if TYPE_CHECKING:
     from .config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+LOCK_FILE_NAMES = (
+    "uv.lock",
+    "poetry.lock",
+    "pdm.lock",
+    "pixi.lock",
+    "conda-lock.yml",
+    "conda-lock.yaml",
+    "requirements.lock",
+)
 
 
 class EnvironmentError(Exception):
@@ -171,3 +182,32 @@ class LauncherEnvironmentManager:
     def exit(self) -> None:
         """Clean up and exit all environments."""
         self._manager.exit()
+
+
+def compute_dependency_hash(config: "AppConfig") -> str:
+    """Hash dependency inputs that should invalidate the runtime environment."""
+    digest = hashlib.sha256()
+    sources_path = config.sources_path
+    paths: list[Path] = []
+
+    config_path = config.config_file_path
+    if config_path and config_path.exists():
+        paths.append(config_path)
+
+    for lock_name in LOCK_FILE_NAMES:
+        lock_path = sources_path / lock_name
+        if lock_path.exists():
+            paths.append(lock_path)
+
+    install_path = config.install_script_path
+    if install_path and install_path.exists():
+        paths.append(install_path)
+
+    for path in sorted(set(paths), key=lambda item: item.relative_to(sources_path).as_posix()):
+        relative = path.relative_to(sources_path).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+
+    return digest.hexdigest()

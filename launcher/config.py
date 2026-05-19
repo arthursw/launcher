@@ -61,6 +61,27 @@ class ProxySettings:
 
 
 @dataclass
+class TrustConfig:
+    """Update trust configuration."""
+
+    mode: str
+    public_key: str
+    manifest_url: str
+    signature_url: str
+
+    def __post_init__(self) -> None:
+        """Validate trust configuration."""
+        if self.mode != "signed_manifest":
+            raise ValueError("trust.mode must be 'signed_manifest'")
+        if not self.public_key:
+            raise ValueError("trust.public_key is required")
+        if not self.manifest_url:
+            raise ValueError("trust.manifest_url is required")
+        if not self.signature_url:
+            raise ValueError("trust.signature_url is required")
+
+
+@dataclass
 class AppConfig:
     """Application configuration from application.yml."""
 
@@ -80,6 +101,7 @@ class AppConfig:
     init_message: Optional[str] = None
     init_timeout: int = 30
     proxy_servers: ProxySettings = field(default_factory=ProxySettings)
+    trust: Optional[TrustConfig] = None
 
     # Internal: path to the config file for saving updates
     _config_path: Optional[Path] = field(default=None, repr=False)
@@ -112,7 +134,8 @@ class AppConfig:
             sanitized_name = "".join(
                 c if c.isalnum() or c in "-_" else "" for c in self.name.lower()
             )
-            folder_name = f"{sanitized_name}-{ver}"
+            sanitized_version = sanitize_version_for_path(ver)
+            folder_name = f"{sanitized_name}-{sanitized_version}"
             return Path(self.path).expanduser() / folder_name
         return Path(self.path).expanduser()
 
@@ -183,8 +206,25 @@ class AppConfig:
         if proxy_dict:
             data["proxy_servers"] = proxy_dict
 
+        if self.trust:
+            data["trust"] = {
+                "mode": self.trust.mode,
+                "public_key": self.trust.public_key,
+                "manifest_url": self.trust.manifest_url,
+                "signature_url": self.trust.signature_url,
+            }
+
         with open(self._config_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def sanitize_version_for_path(version: str) -> str:
+    """Sanitize a release tag before using it in a directory name."""
+    sanitized = "".join(c if c.isalnum() or c in "._-" else "_" for c in version)
+    sanitized = sanitized.strip("._-")
+    if not sanitized:
+        raise ValueError(f"Version cannot be used as a directory name: {version!r}")
+    return sanitized
 
 
 def load_config(config_path: Path) -> AppConfig:
@@ -225,6 +265,9 @@ def load_config(config_path: Path) -> AppConfig:
         ssl_cert_file=proxy_data.get("ssl_cert_file"),
     )
 
+    trust_data = data.pop("trust", None)
+    trust = TrustConfig(**trust_data) if trust_data else None
+
     # Create config instance
     config = AppConfig(
         name=data["name"],
@@ -243,6 +286,7 @@ def load_config(config_path: Path) -> AppConfig:
         init_message=data.get("init_message"),
         init_timeout=data.get("init_timeout", 30),
         proxy_servers=proxy_settings,
+        trust=trust,
     )
 
     # Store the config path for saving

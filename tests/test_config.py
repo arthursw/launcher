@@ -2,10 +2,9 @@
 
 import pytest
 from pathlib import Path
-import tempfile
 import yaml
 
-from launcher.config import AppConfig, ProxySettings, load_config
+from launcher.config import AppConfig, ProxySettings, TrustConfig, load_config
 
 
 class TestProxySettings:
@@ -168,6 +167,17 @@ class TestAppConfig:
         )
         assert config.main_script_path == Path("/tmp/apps/testapp-v1.0.0/src/main.py")
 
+    def test_sources_path_sanitizes_version(self):
+        """Release tags should not create nested paths."""
+        config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path="/tmp/apps",
+            repository="git@github.com:owner/repo.git",
+            version="release/v1.0.0",
+        )
+        assert config.sources_path == Path("/tmp/apps/testapp-release_v1.0.0")
+
 
 class TestLoadConfig:
     """Tests for load_config function."""
@@ -267,6 +277,28 @@ class TestLoadConfig:
         config = load_config(config_file)
         assert config.proxy_servers.http == "http://proxy:8080"
         assert config.proxy_servers.ssl_cert_file == "/path/to/cert.pem"
+
+    def test_load_config_with_signed_manifest_trust(self, tmp_path):
+        """Trust config is parsed and validated."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+            "trust": {
+                "mode": "signed_manifest",
+                "public_key": "abc",
+                "manifest_url": "https://example.com/{version}/launcher-manifest.yml",
+                "signature_url": "https://example.com/{version}/launcher-manifest.yml.sig",
+            },
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+
+        assert isinstance(config.trust, TrustConfig)
+        assert config.trust.mode == "signed_manifest"
 
     def test_config_save(self, tmp_path):
         """Test saving config back to file."""

@@ -1,10 +1,10 @@
 """Tests for the environment module."""
 
-import pytest
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
-from launcher.environment import LauncherEnvironmentManager, EnvironmentError
+from launcher.config import AppConfig
+from launcher.environment import LauncherEnvironmentManager, compute_dependency_hash
 
 
 class TestLauncherEnvironmentManager:
@@ -16,7 +16,7 @@ class TestLauncherEnvironmentManager:
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
 
-        manager = LauncherEnvironmentManager()
+        LauncherEnvironmentManager()
 
         # Should use default path
         mock_env_manager_class.assert_called_once()
@@ -31,7 +31,7 @@ class TestLauncherEnvironmentManager:
         mock_env_manager_class.return_value = mock_instance
 
         custom_path = tmp_path / "custom_wetlands"
-        manager = LauncherEnvironmentManager(wetlands_path=custom_path)
+        LauncherEnvironmentManager(wetlands_path=custom_path)
 
         call_kwargs = mock_env_manager_class.call_args[1]
         assert call_kwargs['wetlands_instance_path'] == custom_path
@@ -185,3 +185,49 @@ class TestLauncherEnvironmentManager:
         result = manager.delete_environment("test_env")
 
         assert result is False
+
+
+class TestDependencyHash:
+    """Tests for environment dependency hashing."""
+
+    def test_hash_changes_when_dependency_file_changes(self, tmp_path):
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources.mkdir(parents=True)
+        config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="pyproject.toml",
+        )
+        (sources / "pyproject.toml").write_text("[project]\nname='a'\n")
+        first = compute_dependency_hash(config)
+
+        (sources / "pyproject.toml").write_text("[project]\nname='b'\n")
+
+        assert compute_dependency_hash(config) != first
+
+    def test_hash_includes_lock_file_and_install_script(self, tmp_path):
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources.mkdir(parents=True)
+        config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="pyproject.toml",
+            install="install.py",
+        )
+        (sources / "pyproject.toml").write_text("[project]\nname='a'\n")
+        (sources / "uv.lock").write_text("lock-a")
+        (sources / "install.py").write_text("print('a')")
+        first = compute_dependency_hash(config)
+
+        (sources / "uv.lock").write_text("lock-b")
+        second = compute_dependency_hash(config)
+        (sources / "install.py").write_text("print('b')")
+
+        assert second != first
+        assert compute_dependency_hash(config) != second

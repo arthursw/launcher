@@ -2,9 +2,8 @@
 
 import queue
 import pytest
-from unittest.mock import Mock, patch
 
-from launcher.worker import WorkerEvent, GUIResponse, EventType, ResponseType
+from launcher.worker import WorkerEvent, EventType, ResponseType
 from launcher.gui.base import BaseGUI
 
 
@@ -119,6 +118,7 @@ class TestBaseGUI:
         assert response.type == ResponseType.PROXY_SETTINGS
         assert response.request_id == "test-123"
         assert response.data["http"] == "http://proxy:8080"
+        assert response.data["remember_password"] is False
 
     def test_handle_init_timeout_event(self, gui, queues):
         """Test handling init timeout events."""
@@ -193,6 +193,20 @@ class TestBaseGUI:
         assert response.request_id == "req-1"
         assert response.data["http"] == "http://proxy:80"
         assert response.data["ssl_cert_file"] == "/path/to/cert.pem"
+
+    def test_submit_proxy_response_with_remember_password(self, gui, queues):
+        """Test submitting proxy response with keychain opt-in."""
+        event_queue, response_queue = queues
+
+        gui._submit_proxy_response(
+            "req-1",
+            "http://user:pass@proxy:80",
+            None,
+            remember_password=True,
+        )
+
+        response = response_queue.get_nowait()
+        assert response.data["remember_password"] is True
 
     def test_submit_init_timeout_response(self, gui, queues):
         """Test submitting init timeout response."""

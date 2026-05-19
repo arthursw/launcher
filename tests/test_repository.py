@@ -6,7 +6,6 @@ from urllib.parse import quote_plus
 from launcher.repository import (
     parse_repository_url,
     get_api_endpoints,
-    RepositoryInfo,
 )
 from launcher.config import AppConfig
 

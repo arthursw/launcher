@@ -19,8 +19,9 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QMessageBox,
     QFileDialog,
+    QCheckBox,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont
 
 from .base import BaseGUI
@@ -39,6 +40,7 @@ class ProxyDialog(QDialog):
         self.http_proxy: Optional[str] = None
         self.https_proxy: Optional[str] = None
         self.ssl_cert_file: Optional[str] = None
+        self.remember_password = False
 
         layout = QVBoxLayout(self)
 
@@ -64,6 +66,9 @@ class ProxyDialog(QDialog):
         form_layout.addRow("SSL Certificate:", cert_layout)
 
         layout.addLayout(form_layout)
+
+        self.remember_check = QCheckBox("Remember proxy password in OS keychain")
+        layout.addWidget(self.remember_check)
 
         # Hint
         hint = QLabel("Format: http://username:password@proxy.example.com:8080")
@@ -91,6 +96,7 @@ class ProxyDialog(QDialog):
         self.http_proxy = self.http_edit.text().strip() or None
         self.https_proxy = self.https_edit.text().strip() or None
         self.ssl_cert_file = self.cert_edit.text().strip() or None
+        self.remember_password = self.remember_check.isChecked()
         super().accept()
 
 
@@ -236,7 +242,11 @@ class QtGUI(BaseGUI):
         dialog = ProxyDialog(self._window)
         if dialog.exec() == QDialog.Accepted:
             self._submit_proxy_response(
-                request_id, dialog.http_proxy, dialog.https_proxy, dialog.ssl_cert_file
+                request_id,
+                dialog.http_proxy,
+                dialog.https_proxy,
+                dialog.ssl_cert_file,
+                remember_password=dialog.remember_password,
             )
         else:
             self._submit_proxy_response(request_id, None, None)

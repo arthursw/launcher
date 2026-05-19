@@ -16,6 +16,7 @@ class ProxyDialog(simpledialog.Dialog):
         self.http_proxy: Optional[str] = None
         self.https_proxy: Optional[str] = None
         self.ssl_cert_file: Optional[str] = None
+        self.remember_password = False
         super().__init__(parent, title)
 
     def body(self, master):
@@ -35,11 +36,18 @@ class ProxyDialog(simpledialog.Dialog):
             row=2, column=2, padx=5, pady=5
         )
 
+        self.remember_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            master,
+            text="Remember proxy password in OS keychain",
+            variable=self.remember_var,
+        ).grid(row=3, column=1, columnspan=2, sticky="w", padx=5, pady=5)
+
         ttk.Label(
             master,
             text="Format: http://username:password@proxy.example.com:8080",
             font=("TkDefaultFont", 9, "italic"),
-        ).grid(row=3, column=0, columnspan=3, pady=5)
+        ).grid(row=4, column=0, columnspan=3, pady=5)
 
         return self.http_entry
 
@@ -61,6 +69,7 @@ class ProxyDialog(simpledialog.Dialog):
         self.http_proxy = self.http_entry.get().strip() or None
         self.https_proxy = self.https_entry.get().strip() or None
         self.ssl_cert_file = self.cert_entry.get().strip() or None
+        self.remember_password = bool(self.remember_var.get())
 
 
 class InitTimeoutDialog(simpledialog.Dialog):
@@ -218,7 +227,11 @@ class TkinterGUI(BaseGUI):
 
         dialog = ProxyDialog(self._root)
         self._submit_proxy_response(
-            request_id, dialog.http_proxy, dialog.https_proxy, dialog.ssl_cert_file
+            request_id,
+            dialog.http_proxy,
+            dialog.https_proxy,
+            dialog.ssl_cert_file,
+            remember_password=dialog.remember_password,
         )
 
     def _show_init_timeout_dialog(self, request_id: str, message: str) -> None:

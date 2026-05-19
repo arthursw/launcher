@@ -4,15 +4,15 @@ import queue
 from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Button, Input, Label, ProgressBar, RichLog, Static
+from textual.containers import Container, Horizontal
+from textual.widgets import Button, Checkbox, Input, Label, ProgressBar, RichLog
 from textual.screen import ModalScreen
 
 from .base import BaseGUI
 from ..worker import WorkerEvent, GUIResponse
 
 
-class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str], Optional[str]]]):
+class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str], Optional[str], bool]]):
     """Modal screen for proxy settings."""
 
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -26,6 +26,7 @@ class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str], Optional[str]]
             yield Input(placeholder="https://user:pass@proxy:8080", id="https-proxy")
             yield Label("SSL Certificate (optional):")
             yield Input(placeholder="/path/to/certificate.pem", id="ssl-cert")
+            yield Checkbox("Remember proxy password in OS keychain", id="remember-password")
             with Horizontal(id="proxy-buttons"):
                 yield Button("OK", variant="primary", id="ok")
                 yield Button("Cancel", id="cancel")
@@ -35,12 +36,13 @@ class ProxyScreen(ModalScreen[tuple[Optional[str], Optional[str], Optional[str]]
             http = self.query_one("#http-proxy", Input).value.strip() or None
             https = self.query_one("#https-proxy", Input).value.strip() or None
             ssl_cert = self.query_one("#ssl-cert", Input).value.strip() or None
-            self.dismiss((http, https, ssl_cert))
+            remember = self.query_one("#remember-password", Checkbox).value
+            self.dismiss((http, https, ssl_cert, remember))
         else:
-            self.dismiss((None, None, None))
+            self.dismiss((None, None, None, False))
 
     def action_cancel(self) -> None:
-        self.dismiss((None, None, None))
+        self.dismiss((None, None, None, False))
 
 
 class InitTimeoutScreen(ModalScreen[str]):
@@ -188,15 +190,20 @@ class LauncherApp(App):
             self.query_one("#log", RichLog).write("[green]Launcher complete. Application is running.[/green]")
             self.query_one("#close", Button).disabled = False
 
-    def _on_proxy_result(self, result: tuple[Optional[str], Optional[str], Optional[str]]) -> None:
+    def _on_proxy_result(self, result: tuple[Optional[str], Optional[str], Optional[str], bool]) -> None:
         """Handle proxy dialog result."""
         from ..worker import GUIResponse, ResponseType
 
-        http, https, ssl_cert = result
+        http, https, ssl_cert, remember = result
         response = GUIResponse(
             type=ResponseType.PROXY_SETTINGS,
             request_id=self._current_request_id or "",
-            data={"http": http, "https": https, "ssl_cert_file": ssl_cert},
+            data={
+                "http": http,
+                "https": https,
+                "ssl_cert_file": ssl_cert,
+                "remember_password": remember,
+            },
         )
         self.response_queue.put(response)
 

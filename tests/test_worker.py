@@ -2,8 +2,7 @@
 
 import queue
 import pytest
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
 from launcher.worker import (
     LauncherWorker,
@@ -13,6 +12,7 @@ from launcher.worker import (
     ResponseType,
     create_queues,
 )
+from launcher.state import LauncherState
 
 
 @pytest.fixture
@@ -222,6 +222,65 @@ class TestLauncherWorker:
         # Should have received an error event
         error_events = [e for e in events if e.type == EventType.ERROR]
         assert len(error_events) > 0
+
+    def test_stop_after_success_does_not_terminate_child_or_env(self, mock_config_file, queues):
+        """Successful initialization transfers process ownership to the app."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+        worker._completed = True
+        worker._runner = MagicMock()
+        worker._env_manager = MagicMock()
+
+        worker.stop()
+
+        worker._runner.stop.assert_not_called()
+        worker._env_manager.exit.assert_not_called()
+
+    def test_stop_before_success_terminates_child_and_env(self, mock_config_file, queues):
+        """Cancellation or failure cleans up launcher-owned resources."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+        worker._runner = MagicMock()
+        worker._env_manager = MagicMock()
+
+        worker.stop()
+
+        worker._runner.stop.assert_called_once()
+        worker._env_manager.exit.assert_called_once()
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_dependency_hash_mismatch_recreates_environment(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        mock_config_file,
+        queues,
+    ):
+        """Changed dependency inputs force environment recreation."""
+        event_queue, response_queue = queues
+        state = LauncherState.for_app("TestApp")
+        state.dependency_hash = "old"
+        state.save()
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner.run_install_script.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        mock_env_instance.delete_environment.assert_called_once_with("TestApp")
 
 
 class TestReinstallOnUpdate:

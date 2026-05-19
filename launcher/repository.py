@@ -2,7 +2,6 @@
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 from urllib.parse import quote_plus
 
 from .config import AppConfig

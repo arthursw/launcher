@@ -1,13 +1,9 @@
 """Tests for the proxy module."""
 
-import os
-import pytest
 import yaml
-from pathlib import Path
 from unittest.mock import patch
 
 from launcher.proxy import (
-    detect_proxy_settings,
     get_proxy_from_environment,
     get_ssl_cert_from_environment,
     discover_proxy_settings,

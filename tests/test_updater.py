@@ -1,17 +1,24 @@
 """Tests for the updater module."""
 
 import io
-import json
+import base64
+import hashlib
+import stat
 import zipfile
 import pytest
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
+import yaml
 
-from launcher.config import AppConfig, ProxySettings
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from launcher.config import AppConfig, ProxySettings, TrustConfig
 from launcher.updater import (
     fetch_latest_release,
+    fetch_signed_manifest,
     check_sources_exist,
     download_and_extract_sources,
+    update_sources,
     NetworkError,
     DownloadError,
     UpdaterError,
@@ -27,6 +34,43 @@ def mock_config():
         path="/tmp/test_apps",
         repository="git@github.com:owner/repo.git"
     )
+
+
+@pytest.fixture
+def signed_config(mock_config):
+    """Create a config with a real Ed25519 trust key."""
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    mock_config.trust = TrustConfig(
+        mode="signed_manifest",
+        public_key=base64.b64encode(public_key).decode("ascii"),
+        manifest_url="https://example.com/{version}/launcher-manifest.yml",
+        signature_url="https://example.com/{version}/launcher-manifest.yml.sig",
+    )
+    return mock_config, private_key
+
+
+def _zip_bytes(files: dict[str, str]) -> bytes:
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    return zip_buffer.getvalue()
+
+
+def _manifest_bytes(app: str, version: str, archive_bytes: bytes) -> bytes:
+    return yaml.safe_dump(
+        {
+            "schema_version": 1,
+            "application": app,
+            "version": version,
+            "archive": {"sha256": hashlib.sha256(archive_bytes).hexdigest()},
+        },
+        sort_keys=False,
+    ).encode("utf-8")
 
 
 
@@ -133,7 +177,7 @@ class TestFetchLatestRelease:
         mock_get.return_value = mock_response
 
         proxy = ProxySettings(http="http://proxy:8080", https="https://proxy:8080")
-        result = fetch_latest_release(mock_config, proxy_settings=proxy)
+        fetch_latest_release(mock_config, proxy_settings=proxy)
 
         # Verify proxy was passed to requests
         mock_get.assert_called_once()
@@ -237,6 +281,91 @@ class TestDownloadAndExtractSources:
             download_and_extract_sources(mock_config, "v1.0.0")
 
     @patch('launcher.updater.requests.get')
+    def test_reject_archive_sha_mismatch(self, mock_get, tmp_path, mock_config):
+        """Archives must match the signed manifest hash before extraction."""
+        mock_config.path = str(tmp_path)
+        archive = _zip_bytes({"root/main.py": "print('hello')"})
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(DownloadError, match="SHA-256"):
+            download_and_extract_sources(
+                mock_config,
+                "v1.0.0",
+                expected_sha256="0" * 64,
+            )
+
+        assert not (tmp_path / "testapp-v1.0.0").exists()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "../evil.py",
+            "/tmp/evil.py",
+            "C:/tmp/evil.py",
+            "root/../../evil.py",
+            "root\\evil.py",
+        ],
+    )
+    @patch('launcher.updater.requests.get')
+    def test_reject_unsafe_zip_paths(self, mock_get, tmp_path, mock_config, name):
+        """Unsafe archive paths must not be extracted."""
+        mock_config.path = str(tmp_path)
+        archive = _zip_bytes({name: "evil"})
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(DownloadError):
+            download_and_extract_sources(mock_config, "v1.0.0")
+
+        assert not (tmp_path / "evil.py").exists()
+        assert not (tmp_path / "testapp-v1.0.0").exists()
+
+    @patch('launcher.updater.requests.get')
+    def test_reject_zip_symlink(self, mock_get, tmp_path, mock_config):
+        """Symlink members are rejected."""
+        mock_config.path = str(tmp_path)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            info = zipfile.ZipInfo("root/link")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, "target")
+        archive = zip_buffer.getvalue()
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(DownloadError, match="symlink"):
+            download_and_extract_sources(mock_config, "v1.0.0")
+
+    @patch('launcher.updater.requests.get')
+    def test_existing_target_is_not_overwritten(self, mock_get, tmp_path, mock_config):
+        """Extraction never overwrites an existing source directory."""
+        mock_config.path = str(tmp_path)
+        existing = tmp_path / "testapp-v1.0.0"
+        existing.mkdir()
+        (existing / "main.py").write_text("old")
+        archive = _zip_bytes({"root/main.py": "new"})
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(DownloadError, match="already exist"):
+            download_and_extract_sources(mock_config, "v1.0.0")
+
+        assert (existing / "main.py").read_text() == "old"
+
+    @patch('launcher.updater.requests.get')
     def test_download_invalid_zip(self, mock_get, tmp_path, mock_config):
         """Test error handling for invalid zip file."""
         mock_config.path = str(tmp_path)
@@ -249,3 +378,65 @@ class TestDownloadAndExtractSources:
 
         with pytest.raises(DownloadError, match="Invalid zip"):
             download_and_extract_sources(mock_config, "v1.0.0")
+
+
+class TestSignedManifest:
+    """Tests for signed manifest verification."""
+
+    @patch("launcher.updater.requests.get")
+    def test_fetch_signed_manifest_accepts_valid_signature(self, mock_get, signed_config):
+        config, private_key = signed_config
+        archive = b"archive"
+        manifest = _manifest_bytes("TestApp", "v1.0.0", archive)
+        signature = private_key.sign(manifest)
+        responses = []
+        for content in (manifest, signature):
+            response = Mock()
+            response.content = content
+            response.raise_for_status = Mock()
+            responses.append(response)
+        mock_get.side_effect = responses
+
+        result = fetch_signed_manifest(config, "v1.0.0")
+
+        assert result.archive_sha256 == hashlib.sha256(archive).hexdigest()
+
+    @patch("launcher.updater.requests.get")
+    def test_fetch_signed_manifest_rejects_bad_signature(self, mock_get, signed_config):
+        config, _private_key = signed_config
+        manifest = _manifest_bytes("TestApp", "v1.0.0", b"archive")
+        responses = []
+        for content in (manifest, b"bad-signature"):
+            response = Mock()
+            response.content = content
+            response.raise_for_status = Mock()
+            responses.append(response)
+        mock_get.side_effect = responses
+
+        with pytest.raises(UpdaterError, match="signature"):
+            fetch_signed_manifest(config, "v1.0.0")
+
+    @patch("launcher.updater.requests.get")
+    def test_fetch_signed_manifest_rejects_app_mismatch(self, mock_get, signed_config):
+        config, private_key = signed_config
+        manifest = _manifest_bytes("OtherApp", "v1.0.0", b"archive")
+        signature = private_key.sign(manifest)
+        responses = []
+        for content in (manifest, signature):
+            response = Mock()
+            response.content = content
+            response.raise_for_status = Mock()
+            responses.append(response)
+        mock_get.side_effect = responses
+
+        with pytest.raises(UpdaterError, match="application"):
+            fetch_signed_manifest(config, "v1.0.0")
+
+    def test_update_sources_rejects_download_without_trust(self, tmp_path, mock_config):
+        """A missing source download cannot proceed without signed manifest trust."""
+        mock_config.path = str(tmp_path)
+        mock_config.auto_update = False
+        mock_config.version = "v1.0.0"
+
+        with pytest.raises(UpdaterError, match="Signed manifest"):
+            update_sources(mock_config)

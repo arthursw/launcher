@@ -1,12 +1,10 @@
 """Console (no GUI) implementation for the launcher."""
 
 import queue
-import sys
 import time
-from typing import Optional
 
 from .base import BaseGUI
-from ..worker import WorkerEvent, GUIResponse, EventType
+from ..worker import WorkerEvent, GUIResponse
 
 
 class ConsoleGUI(BaseGUI):
@@ -65,7 +63,14 @@ class ConsoleGUI(BaseGUI):
             http_proxy = input("HTTP Proxy: ").strip() or None
             https_proxy = input("HTTPS Proxy: ").strip() or None
             ssl_cert_file = input("SSL Certificate path (optional): ").strip() or None
-            self._submit_proxy_response(request_id, http_proxy, https_proxy, ssl_cert_file)
+            remember = input("Remember proxy password in OS keychain? [y/N]: ").strip().lower()
+            self._submit_proxy_response(
+                request_id,
+                http_proxy,
+                https_proxy,
+                ssl_cert_file,
+                remember_password=remember in {"y", "yes"},
+            )
         except (EOFError, KeyboardInterrupt):
             print("\nCancelled")
             self._submit_proxy_response(request_id, None, None)

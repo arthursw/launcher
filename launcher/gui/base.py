@@ -1,7 +1,6 @@
 """Base GUI interface for the launcher application."""
 
 import queue
-import threading
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -135,6 +134,7 @@ class BaseGUI(ABC):
         http_proxy: Optional[str],
         https_proxy: Optional[str],
         ssl_cert_file: Optional[str] = None,
+        remember_password: bool = False,
     ) -> None:
         """Submit proxy settings response to worker.
 
@@ -151,6 +151,7 @@ class BaseGUI(ABC):
                 "http": http_proxy,
                 "https": https_proxy,
                 "ssl_cert_file": ssl_cert_file,
+                "remember_password": remember_password,
             },
         )
         self.response_queue.put(response)

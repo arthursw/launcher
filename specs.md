@@ -1,4 +1,38 @@
+# Launcher Specification
+
 Create a launcher app in python, which launches and auto-updates an application (specified by a `application.yml` file).
+
+## Production Safety Model
+
+Updates require a signed manifest. The launcher resolves the target version,
+downloads `launcher-manifest.yml` and `launcher-manifest.yml.sig`, verifies the
+detached Ed25519 signature using the bundled public key, then parses the
+manifest. It requires `schema_version: 1`, matching `application`, matching
+`version`, and a valid archive SHA-256. The source archive is downloaded only
+after manifest verification and is extracted only if its SHA-256 matches the
+signed manifest.
+
+The packaged app config is immutable at runtime. Mutable values such as the
+installed version, dependency hash, and proxy metadata are stored in OS app
+data:
+
+- macOS: `~/Library/Application Support/<AppName>/launcher-state.yml`
+- Windows: `%APPDATA%\<AppName>\launcher-state.yml`
+- Linux: `~/.local/state/<AppName>/launcher-state.yml`
+
+Proxy passwords are never stored in YAML. They are stored through the OS
+keychain only when the user opts in; otherwise credentials are session-only.
+
+The launched application remains running after successful initialization. The
+launcher only terminates the child process on startup failure or cancellation.
+
+Archive extraction rejects path traversal, absolute paths, Windows drive paths,
+symlinks, and special files. It extracts to a unique temporary directory and
+moves completed sources into place without overwriting an existing target.
+
+Runtime environments are recreated when dependency inputs change. The dependency
+hash includes the configured dependency file, common lock files, and the optional
+install script.
 
 Its primary goal is to ensure the application's source code is present and up-to-date, set up the necessary Python environment, and then launch the main application (run the main script located in the downloaded sources).
 
