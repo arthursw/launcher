@@ -12,6 +12,20 @@ manifest. It requires `schema_version: 1`, matching `application`, matching
 after manifest verification and is extracted only if its SHA-256 matches the
 signed manifest.
 
+The project provides a `launcher-release` developer CLI for release assets:
+
+- `launcher-release keygen` creates an Ed25519 private key, adds the key path
+  to `.gitignore`, and prints the public key for `application.yml`.
+- `launcher-release sign` creates `launcher-manifest.yml` and
+  `launcher-manifest.yml.sig`, using `dist/` by default and inferring the
+  version from the archive filename when possible.
+- `launcher-release verify` checks the manifest signature and archive hash
+  before release assets are uploaded.
+- `launcher-release upload` runs verification, then uses an installed and
+  authenticated official provider CLI (`gh` or `glab`) to upload the manifest
+  and signature. The launcher does not install these tools or manage provider
+  API tokens.
+
 The packaged app config is immutable at runtime. Mutable values such as the
 installed version, dependency hash, and proxy metadata are stored in OS app
 data:

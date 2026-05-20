@@ -1,6 +1,6 @@
 [project]
 name = "launcher"
-version = "0.1.0"
+version = "0.2.0"
 description = "Auto-updating application launcher with Python environment management"
 requires-python = ">=3.10"
 dependencies = [
@@ -27,6 +27,7 @@ textual = [
 
 [project.scripts]
 launcher = "launcher.main:main"
+launcher-release = "launcher.release_cli:main"
 
 [build-system]
 requires = ["hatchling"]

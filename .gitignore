@@ -15,3 +15,7 @@ wheels/
 wetlands/
 wetlands
 apps/
+
+# Launcher signing keys
+launcher-signing-key.pem
+*.signing-key.pem

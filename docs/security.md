@@ -1,68 +1,126 @@
-# Security
+# Security Guide
 
-## Signed Manifest Trust
+Launcher downloads Python code and runs it. That is powerful, but it also means
+the launcher must be careful.
 
-Downloaded updates are trusted only through a detached Ed25519 signature over a
-release manifest. The launcher verifies the manifest signature before parsing
-the manifest YAML.
+This guide explains the security model without assuming packaging or security
+experience.
 
-Required app config:
+## The Problem
 
-```yaml
-trust:
-  mode: signed_manifest
-  public_key: "<base64-ed25519-public-key>"
-  manifest_url: "https://github.com/org/app/releases/download/{version}/launcher-manifest.yml"
-  signature_url: "https://github.com/org/app/releases/download/{version}/launcher-manifest.yml.sig"
-```
+If a program downloads code from the internet and runs it, it must answer one
+question:
 
-Manifest:
+> Is this really the release the app developer intended users to run?
+
+HTTPS helps, but it is not the whole answer. A wrong server response, broken
+release process, compromised endpoint, or malicious archive could still cause
+bad code to run.
+
+## The Solution: Signed Manifests
+
+Each app release must include two small files:
+
+- `launcher-manifest.yml`
+- `launcher-manifest.yml.sig`
+
+The manifest describes the release:
 
 ```yaml
 schema_version: 1
 application: MyApp
 version: v1.2.3
 archive:
-  sha256: "<hex-sha256-of-source-archive>"
+  sha256: "<hash-of-the-source-archive>"
 ```
 
-The launcher rejects:
+The `.sig` file is a digital signature created by the app developer.
 
-- missing or invalid signatures;
-- manifest schema versions other than `1`;
-- application or version mismatches;
-- invalid archive hashes;
-- source archives whose SHA-256 differs from the signed manifest.
+The launcher contains the public key in `myapp.yml`. When it updates the app, it:
 
-## Archive Extraction
+1. downloads the manifest and signature;
+2. verifies that the signature matches the public key;
+3. downloads the app source archive;
+4. checks that the archive hash matches the signed manifest;
+5. extracts and runs the app only if all checks pass.
 
-Archives are extracted into a unique temporary directory and moved into place
-only after validation succeeds. Existing target directories are not overwritten.
+In short: the signature proves who approved the manifest, and the hash proves
+the downloaded archive is exactly the archive described by that manifest.
 
-The extractor rejects members containing parent path segments, absolute paths,
-Windows drive paths, backslash paths, symlinks, and special files.
+## What This Protects Against
+
+Signed manifests protect users from:
+
+- accidentally downloading the wrong archive;
+- corrupted downloads;
+- tampered manifests;
+- tampered archives;
+- many proxy, cache, or custom endpoint mistakes.
+
+They do not protect against:
+
+- a stolen signing private key;
+- a malicious developer signing a malicious release;
+- bugs or vulnerabilities inside the app itself.
 
 ## Release Flow
 
-Generate a manifest and signature:
+Create the signing key once:
 
 ```bash
-uv run python scripts/sign_manifest.py \
-  --application MyApp \
-  --version v1.2.3 \
-  --archive source.zip \
-  --private-key ed25519-private.pem
+uv run launcher-release keygen
 ```
 
-Upload both generated files as release assets:
+This creates `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the
+public key to put in your app config.
+
+For each app release:
+
+1. publish the normal GitHub or GitLab release;
+2. put the source archive in `dist/`;
+3. run the signing command;
+4. verify the generated release files;
+5. upload both files as release assets.
+
+```bash
+uv run launcher-release sign
+uv run launcher-release verify
+uv run launcher-release upload
+```
+
+By default, `sign`:
+
+- looks for one archive in `dist/`;
+- infers the version from the archive filename, such as `myapp-v1.2.3.zip`;
+- writes `dist/launcher-manifest.yml`;
+- writes `dist/launcher-manifest.yml.sig`.
+
+`verify` checks the signature and confirms that the archive still matches the
+hash in the manifest.
+
+`upload` sends the manifest and signature to the release using the official
+provider CLI:
+
+- GitHub uses `gh`: https://github.com/cli/cli#installation
+- GitLab uses `glab`: https://gitlab.com/gitlab-org/cli/#installation
+
+Install and authenticate the matching tool before running `upload`. Launcher
+does not ask for or store GitHub/GitLab tokens.
+
+Manual upload is also fine. Open the release page on github.com or gitlab.com
+and add these two files as release assets:
 
 - `launcher-manifest.yml`
 - `launcher-manifest.yml.sig`
 
-The command prints the base64 public key to place in `application.yml`.
+The launcher then has enough information to verify the release before running
+it.
 
-## Non-Goals
+## Proxy Passwords
 
-The launcher does not make unsigned release archives trustworthy, protect a
-compromised signing key, sandbox the launched application, or validate the
-semantic correctness of application code.
+Some users need a corporate proxy to access the internet.
+
+Launcher can remember proxy passwords, but it does not write them into YAML
+files. If the user chooses "remember password", the password is stored through
+the operating system keychain. If keychain storage is unavailable, the password
+is used only for the current launch.

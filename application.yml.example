@@ -16,6 +16,7 @@ auto_update: true
 # Signed manifests are required before any downloaded archive can execute.
 trust:
   mode: signed_manifest
+  # Generate with: uv run launcher-release keygen
   public_key: "<base64-ed25519-public-key>"
   manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
