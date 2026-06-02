@@ -1,7 +1,8 @@
 # Configuration Guide
 
 Each packaged launcher includes one YAML file describing the app it should run.
-This file is usually named after the app, for example `myapp/myapp.yml`.
+In an app repository, the default location is
+`packaging/launcher/application.yml`.
 
 ## Minimal Example
 
@@ -44,7 +45,7 @@ The `trust` section tells Launcher how to verify downloaded app sources.
 Generate the key with:
 
 ```bash
-uv run launcher-release keygen
+uv run launcher release keygen
 ```
 
 The command prints the `public_key` value.

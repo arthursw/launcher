@@ -36,7 +36,8 @@ archive:
 
 The `.sig` file is a digital signature created by the app developer.
 
-The launcher contains the public key in `myapp.yml`. When it updates the app, it:
+The launcher contains the public key in `packaging/launcher/application.yml`.
+When it updates the app, it:
 
 1. downloads the manifest and signature;
 2. verifies that the signature matches the public key;
@@ -68,7 +69,7 @@ They do not protect against:
 Create the signing key once:
 
 ```bash
-uv run launcher-release keygen
+uv run launcher release keygen
 ```
 
 This creates `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the
@@ -83,9 +84,9 @@ For each app release:
 5. upload both files as release assets.
 
 ```bash
-uv run launcher-release sign
-uv run launcher-release verify
-uv run launcher-release upload
+uv run launcher release sign
+uv run launcher release verify
+uv run launcher release upload
 ```
 
 By default, `sign`:

@@ -10,8 +10,11 @@ from launcher import main as _impl
 
 CONFIG_ENV_VAR = _impl.CONFIG_ENV_VAR
 DEFAULT_CONFIG_NAME = _impl.DEFAULT_CONFIG_NAME
+DEFAULT_PACKAGING_CONFIG = _impl.DEFAULT_PACKAGING_CONFIG
 get_gui = _impl.get_gui
+init_launcher = _impl.init_launcher
 run_with_delayed_gui = _impl.run_with_delayed_gui
+run_launcher = _impl.run_launcher
 setup_logging = _impl.setup_logging
 main = _impl.main
 
@@ -23,26 +26,24 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 def _default_config_candidates() -> list[Path]:
     """Return default config locations using this wrapper's file location."""
-    candidates = [Path.cwd() / DEFAULT_CONFIG_NAME]
+    candidates = [Path.cwd() / DEFAULT_PACKAGING_CONFIG]
 
     if getattr(sys, "frozen", False):
         executable = Path(sys.executable).resolve()
         executable_dir = executable.parent
-        app_name = executable.stem
         bundle_dir = Path(__file__).resolve().parent
+        internal_root = Path(getattr(sys, "_MEIPASS", bundle_dir.parent)).resolve()
 
         candidates.extend(
             [
-                executable_dir / DEFAULT_CONFIG_NAME,
-                executable_dir / f"{app_name}.yml",
-                executable_dir / app_name / f"{app_name}.yml",
-                bundle_dir / DEFAULT_CONFIG_NAME,
-                bundle_dir / f"{app_name}.yml",
-                bundle_dir / app_name / f"{app_name}.yml",
+                internal_root / DEFAULT_PACKAGING_CONFIG,
+                executable_dir / DEFAULT_PACKAGING_CONFIG,
+                bundle_dir / DEFAULT_PACKAGING_CONFIG,
             ]
         )
     else:
-        candidates.append(Path(__file__).resolve().with_name(DEFAULT_CONFIG_NAME))
+        repo_root = Path(__file__).resolve().parent
+        candidates.append(repo_root / DEFAULT_PACKAGING_CONFIG)
 
     return _unique_paths(candidates)
 
@@ -66,11 +67,14 @@ def find_config_path(config_path: Optional[Path] = None) -> tuple[Path, list[Pat
 __all__ = [
     "CONFIG_ENV_VAR",
     "DEFAULT_CONFIG_NAME",
+    "DEFAULT_PACKAGING_CONFIG",
     "_default_config_candidates",
     "_unique_paths",
     "find_config_path",
     "get_gui",
+    "init_launcher",
     "main",
+    "run_launcher",
     "run_with_delayed_gui",
     "setup_logging",
 ]

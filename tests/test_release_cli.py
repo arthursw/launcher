@@ -22,11 +22,11 @@ def test_sign_infers_config_archive_and_version_from_defaults(tmp_path, monkeypa
     """sign should infer app name from config and version/archive from dist/."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".gitignore").write_text("")
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "myapp.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text("name: MyApp\n")
     (dist_dir / "myapp-v1.2.3.zip").write_bytes(b"archive-content")
     public_key = release_cli.keygen()
 
@@ -46,17 +46,66 @@ def test_sign_infers_config_archive_and_version_from_defaults(tmp_path, monkeypa
     }
 
 
+def test_sign_infers_packaging_launcher_config_by_default(tmp_path, monkeypatch):
+    """sign should prefer the app-repo launcher config convention."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").write_text("")
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (app_dir / "application.yml").write_text("name: PackagedApp\n")
+    (dist_dir / "packaged-app-v2.0.0.zip").write_bytes(b"archive-content")
+    release_cli.keygen()
+
+    manifest_path, _, _ = release_cli.sign_release()
+
+    manifest = yaml.safe_load(manifest_path.read_text())
+    assert manifest["application"] == "PackagedApp"
+    assert manifest["version"] == "v2.0.0"
+
+
 def test_verify_uses_config_public_key_and_default_dist_assets(tmp_path, monkeypatch):
     """verify should read trust.public_key from config and release assets from dist/."""
     monkeypatch.chdir(tmp_path)
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
     archive = dist_dir / "myapp-v1.2.3.zip"
     archive.write_bytes(b"archive-content")
     public_key = release_cli.keygen()
-    (app_dir / "myapp.yml").write_text(
+    (app_dir / "application.yml").write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "trust:",
+                "  mode: signed_manifest",
+                f'  public_key: "{public_key}"',
+                "  manifest_url: https://example.com/{version}/launcher-manifest.yml",
+                "  signature_url: https://example.com/{version}/launcher-manifest.yml.sig",
+            ]
+        )
+    )
+    release_cli.sign_release()
+
+    manifest = release_cli.verify_release()
+
+    assert manifest["application"] == "MyApp"
+    assert manifest["version"] == "v1.2.3"
+
+
+def test_verify_uses_packaging_launcher_config_public_key(tmp_path, monkeypatch):
+    """verify should infer trust.public_key from packaging/launcher/application.yml."""
+    monkeypatch.chdir(tmp_path)
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    archive = dist_dir / "myapp-v1.2.3.zip"
+    archive.write_bytes(b"archive-content")
+    public_key = release_cli.keygen()
+    (app_dir / "application.yml").write_text(
         "\n".join(
             [
                 "name: MyApp",
@@ -79,14 +128,14 @@ def test_verify_uses_config_public_key_and_default_dist_assets(tmp_path, monkeyp
 def test_verify_rejects_tampered_archive(tmp_path, monkeypatch):
     """verify should fail when the archive no longer matches the manifest hash."""
     monkeypatch.chdir(tmp_path)
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
     archive = dist_dir / "myapp-v1.2.3.zip"
     archive.write_bytes(b"archive-content")
     public_key = release_cli.keygen()
-    (app_dir / "myapp.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text("name: MyApp\n")
     release_cli.sign_release()
     archive.write_bytes(b"tampered")
 
@@ -97,11 +146,11 @@ def test_verify_rejects_tampered_archive(tmp_path, monkeypatch):
 def test_cli_verify_prints_success(tmp_path, monkeypatch, capsys):
     """The installed CLI entry point should expose verify."""
     monkeypatch.chdir(tmp_path)
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "myapp.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text("name: MyApp\n")
     (dist_dir / "myapp-v1.2.3.zip").write_bytes(b"archive-content")
     public_key = release_cli.keygen()
     release_cli.sign_release()
@@ -115,17 +164,17 @@ def test_cli_verify_prints_success(tmp_path, monkeypatch, capsys):
 def test_upload_dry_run_uses_github_cli(tmp_path, monkeypatch):
     """GitHub uploads should use gh after verifying release assets."""
     monkeypatch.chdir(tmp_path)
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
     fake_bin = tmp_path / "bin"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
     fake_bin.mkdir()
     gh = fake_bin / "gh"
     gh.write_text("")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
-    (app_dir / "myapp.yml").write_text(
+    (app_dir / "application.yml").write_text(
         "\n".join(
             [
                 "name: MyApp",
@@ -155,17 +204,17 @@ def test_upload_dry_run_uses_github_cli(tmp_path, monkeypatch):
 def test_upload_dry_run_uses_gitlab_cli(tmp_path, monkeypatch):
     """GitLab uploads should use glab with the package-registry flag."""
     monkeypatch.chdir(tmp_path)
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
     fake_bin = tmp_path / "bin"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
     fake_bin.mkdir()
     glab = fake_bin / "glab"
     glab.write_text("")
     glab.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
-    (app_dir / "myapp.yml").write_text(
+    (app_dir / "application.yml").write_text(
         "\n".join(
             [
                 "name: MyApp",
@@ -195,12 +244,12 @@ def test_upload_dry_run_uses_gitlab_cli(tmp_path, monkeypatch):
 def test_upload_missing_provider_cli_explains_install_and_manual_upload(tmp_path, monkeypatch):
     """Missing gh/glab should produce a helpful prerequisite-oriented error."""
     monkeypatch.chdir(tmp_path)
-    app_dir = tmp_path / "myapp"
+    app_dir = tmp_path / "packaging" / "launcher"
     dist_dir = tmp_path / "dist"
-    app_dir.mkdir()
+    app_dir.mkdir(parents=True)
     dist_dir.mkdir()
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
-    (app_dir / "myapp.yml").write_text(
+    (app_dir / "application.yml").write_text(
         "\n".join(
             [
                 "name: MyApp",

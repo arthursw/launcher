@@ -27,7 +27,6 @@ textual = [
 
 [project.scripts]
 launcher = "launcher.main:main"
-launcher-release = "launcher.release_cli:main"
 
 [build-system]
 requires = ["hatchling"]

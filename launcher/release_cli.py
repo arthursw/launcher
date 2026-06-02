@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 DEFAULT_DIST_DIR = Path("dist")
+DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_PRIVATE_KEY = Path("launcher-signing-key.pem")
 DEFAULT_MANIFEST_NAME = "launcher-manifest.yml"
 DEFAULT_SIGNATURE_NAME = "launcher-manifest.yml.sig"
@@ -235,19 +236,9 @@ def resolve_config_path(config_path: Path | None) -> Path | None:
             raise ReleaseCliError(f"Config file not found: {path}")
         return path
 
-    if Path("application.yml").exists():
-        return Path("application.yml")
+    if DEFAULT_CONFIG_PATH.exists():
+        return DEFAULT_CONFIG_PATH
 
-    candidates = [
-        path
-        for path in sorted(Path(".").glob("*/*.yml"))
-        if path.parts[0] not in {"build", "dist", "apps", "docs"}
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        names = ", ".join(str(path) for path in candidates)
-        raise ReleaseCliError(f"Multiple app config files found. Pass --config. Candidates: {names}")
     return None
 
 
@@ -299,7 +290,7 @@ def load_private_key(private_key_path: Path) -> Ed25519PrivateKey:
         )
     except FileNotFoundError as e:
         raise ReleaseCliError(
-            f"Private key not found: {private_key_path}. Run `launcher-release keygen` first."
+            f"Private key not found: {private_key_path}. Run `launcher release keygen` first."
         ) from e
     if not isinstance(private_key, Ed25519PrivateKey):
         raise ReleaseCliError("Private key must be an Ed25519 PEM key")
@@ -387,10 +378,10 @@ def _add_to_gitignore(path: Path) -> None:
         f.write(f"{prefix}\n# Launcher signing keys\n{entry}\n")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     """Build the release CLI parser."""
     parser = argparse.ArgumentParser(
-        prog="launcher-release",
+        prog=prog,
         description="Prepare, verify, and upload launcher release assets.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -428,9 +419,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> int:
     """Run the release CLI."""
-    parser = build_parser()
+    parser = build_parser(prog)
     args = parser.parse_args(argv)
 
     try:

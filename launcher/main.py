@@ -6,14 +6,20 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from launcher.config import load_config
 from launcher.gui.base import BaseGUI
 from launcher.worker import EventType, LauncherWorker, create_queues
 
 DEFAULT_CONFIG_NAME = "application.yml"
+DEFAULT_PACKAGING_CONFIG = Path("packaging") / "launcher" / DEFAULT_CONFIG_NAME
 CONFIG_ENV_VAR = "LAUNCHER_CONFIG"
+INIT_ICON_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f"
+    b"\x00\x01\x01\x01\x00\x1f\xd4\x9d\xb8\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -107,26 +113,24 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 def _default_config_candidates() -> list[Path]:
     """Return default config locations in the order the launcher should check."""
-    candidates = [Path.cwd() / DEFAULT_CONFIG_NAME]
+    candidates = [Path.cwd() / DEFAULT_PACKAGING_CONFIG]
 
     if getattr(sys, "frozen", False):
         executable = Path(sys.executable).resolve()
         executable_dir = executable.parent
-        app_name = executable.stem
         bundle_dir = Path(__file__).resolve().parent
+        internal_root = Path(getattr(sys, "_MEIPASS", bundle_dir.parent)).resolve()
 
         candidates.extend(
             [
-                executable_dir / DEFAULT_CONFIG_NAME,
-                executable_dir / f"{app_name}.yml",
-                executable_dir / app_name / f"{app_name}.yml",
-                bundle_dir / DEFAULT_CONFIG_NAME,
-                bundle_dir / f"{app_name}.yml",
-                bundle_dir / app_name / f"{app_name}.yml",
+                internal_root / DEFAULT_PACKAGING_CONFIG,
+                executable_dir / DEFAULT_PACKAGING_CONFIG,
+                bundle_dir / DEFAULT_PACKAGING_CONFIG,
             ]
         )
     else:
-        candidates.append(Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_NAME)
+        repo_root = Path(__file__).resolve().parent.parent
+        candidates.append(repo_root / DEFAULT_PACKAGING_CONFIG)
 
     return _unique_paths(candidates)
 
@@ -148,8 +152,8 @@ def find_config_path(config_path: Optional[Path] = None) -> tuple[Path, list[Pat
     return candidates[0], candidates
 
 
-def main(config_path: Optional[Path] = None) -> int:
-    """Main entry point."""
+def run_launcher(argv: Sequence[str] | None = None, config_path: Optional[Path] = None) -> int:
+    """Run the launcher runtime."""
     parser = argparse.ArgumentParser(
         description="Application launcher with auto-update",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -159,7 +163,7 @@ def main(config_path: Optional[Path] = None) -> int:
         "-c",
         type=Path,
         default=None,
-        help="Path to application.yml config file (default: application.yml)",
+        help=f"Path to app config (default: {DEFAULT_PACKAGING_CONFIG})",
     )
     parser.add_argument(
         "--gui",
@@ -184,7 +188,7 @@ def main(config_path: Optional[Path] = None) -> int:
         help="Enable debug logging",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     setup_logging(args.debug)
     logger = logging.getLogger(__name__)
 
@@ -236,6 +240,119 @@ def main(config_path: Optional[Path] = None) -> int:
     if gui.error_message or worker.failed:
         return 1
     return 0
+
+
+def init_launcher(argv: Sequence[str] | None = None) -> int:
+    """Create app-owned launcher packaging files."""
+    parser = argparse.ArgumentParser(
+        prog="launcher init",
+        description="Create launcher packaging files for an app repository.",
+    )
+    parser.add_argument("--config", type=Path, default=DEFAULT_PACKAGING_CONFIG)
+    parser.add_argument("--name", default="MyApp", help="Application display name")
+    parser.add_argument("--repository", default="https://github.com/my-org/myapp.git")
+    parser.add_argument("--main", default="main.py", help="Main Python file inside downloaded app sources")
+    parser.add_argument("--path", default="~/Applications/{name}", help="Install path for downloaded app sources")
+    parser.add_argument("--configuration", default="pyproject.toml", help="Dependency config inside app sources")
+    parser.add_argument("--force", action="store_true", help="Overwrite generated files if they already exist")
+    args = parser.parse_args(argv)
+
+    config_path = args.config.expanduser()
+    icon_path = config_path.parent / "icon_128x128.png"
+    existing = [path for path in (config_path, icon_path) if path.exists()]
+    if existing and not args.force:
+        names = ", ".join(str(path) for path in existing)
+        print(f"Error: launcher packaging file already exists: {names}", file=sys.stderr)
+        print("Use --force to overwrite generated files.", file=sys.stderr)
+        return 1
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    install_path = args.path.format(name=args.name)
+    manifest_url, signature_url = _release_asset_urls(args.repository)
+    config_path.write_text(
+        "\n".join(
+            [
+                f"name: {args.name}",
+                f"repository: {args.repository}",
+                f"main: {args.main}",
+                f'path: "{install_path}"',
+                "auto_update: true",
+                f"configuration: {args.configuration}",
+                "",
+                "trust:",
+                "  mode: signed_manifest",
+                '  public_key: "<base64-ed25519-public-key>"',
+                f'  manifest_url: "{manifest_url}"',
+                f'  signature_url: "{signature_url}"',
+                "",
+            ]
+        )
+    )
+    icon_path.write_bytes(INIT_ICON_BYTES)
+
+    print(f"Created {config_path}")
+    print(f"Created {icon_path}")
+    return 0
+
+
+def main(argv: Sequence[str] | Path | None = None, config_path: Optional[Path] = None) -> int:
+    """Main entry point for runtime and developer subcommands."""
+    if isinstance(argv, Path):
+        config_path = argv
+        argv = None
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args:
+        command = args[0]
+        rest = args[1:]
+        if command == "run":
+            return run_launcher(rest, config_path=config_path)
+        if command == "release":
+            from launcher import release_cli
+
+            return release_cli.main(rest, prog="launcher release")
+        if command == "init":
+            return init_launcher(rest)
+        if command == "build":
+            from launcher import build_cli
+
+            return build_cli.main(rest)
+
+    return run_launcher(args, config_path=config_path)
+
+
+def _repo_name(repository: str) -> str:
+    """Infer a repository name for generated trust URL placeholders."""
+    cleaned = repository.rstrip("/").removesuffix(".git")
+    if not cleaned:
+        return "myapp"
+    if ":" in cleaned and "/" not in cleaned.rsplit(":", 1)[0]:
+        cleaned = cleaned.rsplit(":", 1)[1]
+    return cleaned.rsplit("/", 1)[-1] or "myapp"
+
+
+def _release_asset_urls(repository: str) -> tuple[str, str]:
+    """Infer release asset URLs for generated config when possible."""
+    cleaned = repository.rstrip("/").removesuffix(".git")
+    owner_repo = ""
+    if cleaned.startswith("https://github.com/"):
+        owner_repo = cleaned.removeprefix("https://github.com/")
+        base = f"https://github.com/{owner_repo}/releases/download/{{version}}"
+    elif cleaned.startswith("git@github.com:"):
+        owner_repo = cleaned.removeprefix("git@github.com:")
+        base = f"https://github.com/{owner_repo}/releases/download/{{version}}"
+    elif cleaned.startswith("https://gitlab.com/"):
+        owner_repo = cleaned.removeprefix("https://gitlab.com/")
+        base = f"https://gitlab.com/{owner_repo}/-/releases/{{version}}/downloads"
+    elif cleaned.startswith("git@gitlab.com:"):
+        owner_repo = cleaned.removeprefix("git@gitlab.com:")
+        base = f"https://gitlab.com/{owner_repo}/-/releases/{{version}}/downloads"
+    else:
+        base = f"https://github.com/my-org/{_repo_name(repository)}/releases/download/{{version}}"
+
+    return (
+        f"{base}/launcher-manifest.yml",
+        f"{base}/launcher-manifest.yml.sig",
+    )
 
 
 if __name__ == "__main__":

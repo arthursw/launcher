@@ -10,9 +10,8 @@ It adds two useful features to your packaged app:
 - **startup UX:** it can show progress while downloading or preparing the
   environment, and it can ask for proxy settings when the network requires them.
 
-So tools like PyInstaller or cx-Freeze are used for the stable launcher, not for
-every version of your application. On platforms that require code signing, such
-as macOS, this also avoids repeating the signing process for every minor update.
+PyInstaller or cx-Freeze package the stable launcher. Your real app keeps
+shipping as normal GitHub or GitLab releases.
 
 ## Why Use This?
 
@@ -21,19 +20,15 @@ means building a new executable, testing the bundle again, and redistributing a
 large file.
 
 Launcher separates the executable you give to users from the application code
-you keep releasing. Your release process becomes closer to normal Python
-development:
+you keep releasing:
 
-1. build and sign the launcher;
-2. publish releases of your app source code;
-3. run `launcher-release sign` for each release;
-4. users open the launcher;
-5. the launcher updates and starts the app.
-
-This is useful when your users need a simple executable, but you want to keep
-shipping app updates through GitHub or GitLab releases. Users still get a normal
-app icon to open, and you still get controlled updates, version tracking,
-progress feedback, and proxy handling.
+1. add Launcher as a dev dependency in your app repo;
+2. initialize `packaging/launcher/`;
+3. build and sign the launcher executable;
+4. publish releases of your app source code;
+5. run `launcher release sign` for each app release;
+6. users open the launcher;
+7. the launcher updates and starts the app.
 
 ## What Happens When The User Opens It?
 
@@ -51,76 +46,52 @@ Launcher:
 (*) Security note: the launcher does not blindly run downloaded code. Each
 release must provide a signed manifest. The launcher verifies that signature,
 then verifies that the downloaded archive matches the hash written in the signed
-manifest. See [docs/security.md](docs/security.md) for a gentle explanation.
+manifest. See [docs/security.md](docs/security.md).
 
-## The Files You Create
+## Minimal Packaging Workflow
 
-For each app, create a small folder with its launcher config and icons:
+In your app repository:
+
+```bash
+uv add --dev launcher
+uv run launcher init
+```
+
+This creates:
 
 ```text
-launcher/
-|-- main.py
-|-- myapp/
-|   |-- myapp.yml
-|   |-- myapp.icns
-|   `-- icon_128x128.png
-`-- myapp_launcher.spec
+packaging/
+`-- launcher/
+    |-- application.yml
+    `-- icon_128x128.png
 ```
 
-`myapp.yml` tells Launcher what app to download and how to start it.
-
-First, create the signing key:
+Edit `packaging/launcher/application.yml`, then create the signing key:
 
 ```bash
-uv run launcher-release keygen
+uv run launcher release keygen
 ```
 
-The command creates `launcher-signing-key.pem`, adds it to `.gitignore`, and
-prints the public key to put in `myapp.yml`.
-
-```yaml
-name: MyApp
-repository: https://github.com/my-org/myapp.git
-main: main.py
-path: "~/Applications/MyApp"
-auto_update: true
-configuration: pyproject.toml
-
-trust:
-  mode: signed_manifest
-  public_key: "<base64-ed25519-public-key>"
-  manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
-  signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
-```
-
-The PyInstaller spec packages the generic launcher and includes `myapp.yml` as
-data:
-
-```python
-a = Analysis(
-    ["main.py"],
-    datas=[
-        ("myapp/myapp.yml", "myapp"),
-        ("myapp/icon_128x128.png", "resources"),
-    ],
-)
-```
-
-Build it:
+Put the printed public key in the config, then build the launcher:
 
 ```bash
-uv run --with pyinstaller pyinstaller myapp_launcher.spec
+uv run --with pyinstaller launcher build
 ```
 
-For each app release, put the source archive in `dist/` and sign it:
+The launcher build is written under `dist/launcher/`. It is separate from app
+release artifacts and only needs to be rebuilt when launcher config, assets, or
+tooling change.
+
+For each app release, put the source archive in `dist/` and run:
 
 ```bash
-uv run launcher-release sign
-uv run launcher-release verify
-uv run launcher-release upload
+uv run launcher release sign
+uv run launcher release verify
+uv run launcher release upload
 ```
 
-By default, the command writes:
+The release commands use `packaging/launcher/application.yml` by default and
+write:
 
 ```text
 dist/
@@ -128,22 +99,14 @@ dist/
 `-- launcher-manifest.yml.sig
 ```
 
-Upload those two files as release assets.
-
-`upload` uses the official GitHub or GitLab CLI if it is installed and already
-authenticated. Install instructions are on the project pages:
-[GitHub CLI](https://github.com/cli/cli#installation) and
-[GitLab CLI](https://gitlab.com/gitlab-org/cli/#installation). You can also
-upload `launcher-manifest.yml` and `launcher-manifest.yml.sig` manually from the
-GitHub or GitLab release page; see [docs/security.md](docs/security.md).
-
-The user receives the generated app or executable. The real app can then update
-through normal releases.
+Upload those two files as release assets. `upload` uses the official GitHub or
+GitLab CLI if it is installed and already authenticated.
 
 ## Learn The Pieces
 
 - [Packaging guide](docs/packaging.md): how to build a launcher for your app.
-- [Configuration guide](docs/configuration.md): what goes in `myapp.yml`.
+- [Configuration guide](docs/configuration.md): what goes in
+  `packaging/launcher/application.yml`.
 - [Security guide](docs/security.md): why signed manifests are needed.
 
 ## Developing Launcher Itself
@@ -157,5 +120,5 @@ uv run ruff check .
 Run from source:
 
 ```bash
-uv run python main.py -c myapp/myapp.yml
+uv run launcher run -c packaging/launcher/application.yml
 ```

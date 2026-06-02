@@ -1,6 +1,7 @@
 # Launcher Specification
 
-Create a launcher app in python, which launches and auto-updates an application (specified by a `application.yml` file).
+Create a launcher app in python, which launches and auto-updates an application
+specified by `packaging/launcher/application.yml` in the app repository.
 
 ## Production Safety Model
 
@@ -12,16 +13,22 @@ manifest. It requires `schema_version: 1`, matching `application`, matching
 after manifest verification and is extracted only if its SHA-256 matches the
 signed manifest.
 
-The project provides a `launcher-release` developer CLI for release assets:
+The project provides one developer CLI, `launcher`, for app-repo packaging,
+building, and release assets:
 
-- `launcher-release keygen` creates an Ed25519 private key, adds the key path
-  to `.gitignore`, and prints the public key for `application.yml`.
-- `launcher-release sign` creates `launcher-manifest.yml` and
+- `launcher init` creates `packaging/launcher/application.yml` and default
+  launcher assets in the app repository.
+- `launcher build` generates PyInstaller build files and writes the launcher
+  executable output under `dist/launcher/`, separate from app release assets.
+- `launcher release keygen` creates an Ed25519 private key, adds the key path
+  to `.gitignore`, and prints the public key for
+  `packaging/launcher/application.yml`.
+- `launcher release sign` creates `launcher-manifest.yml` and
   `launcher-manifest.yml.sig`, using `dist/` by default and inferring the
   version from the archive filename when possible.
-- `launcher-release verify` checks the manifest signature and archive hash
+- `launcher release verify` checks the manifest signature and archive hash
   before release assets are uploaded.
-- `launcher-release upload` runs verification, then uses an installed and
+- `launcher release upload` runs verification, then uses an installed and
   authenticated official provider CLI (`gh` or `glab`) to upload the manifest
   and signature. The launcher does not install these tools or manage provider
   API tokens.
@@ -50,10 +57,11 @@ install script.
 
 Its primary goal is to ensure the application's source code is present and up-to-date, set up the necessary Python environment, and then launch the main application (run the main script located in the downloaded sources).
 
-The project will be managed with `uv` and a `pyproject.toml`.
-Eventually, this launcher will be packaged into an executable with PyInstaller (or cxFreeze).
-
-With this launcher, it will be extremely easy for a developper to ship his app: just create a zip containing the launcher executable and the `application.yml` filled with the settings of the application to launch.
+The project will be managed with `uv` and a `pyproject.toml`. App repositories
+consume Launcher as a pinned development dependency, not by forking or cloning
+this repository into the app repository. The generated launcher executable is
+built from the installed Launcher package plus the app-owned files in
+`packaging/launcher/`.
 
 
 The `application.yml` will look as follow:
@@ -121,12 +129,14 @@ configuration: pyproject.toml
 ```
 
 This launcher will:
-- read the `application.yml` file located beside the launcher executable
-- if `auto_update`: check the latest release from `api`/`releases_endpoint` and set the current version from this latest release (which has a corresponding tag) in the following format: `tagname`
+- read the app config bundled with the launcher, using the app-repo default
+  `packaging/launcher/application.yml` during development and build tooling
+- if `auto_update`: check the latest release from `api`/`releases_endpoint` and use this latest release (which has a corresponding tag) in the following format: `tagname`
 - otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
 - in all cases: check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
 - if the sources do not exist: download them from the `archive_endpoint` and extract them in the `path`
-- update `application.yml` to set the current version in `version`
+- save mutable runtime values such as installed version in OS app data, not in
+  the packaged config
 - get or create the environment and execute the main script: 
   - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
   - if the environment does not exists: 
@@ -216,7 +226,7 @@ condaConfigurations += [
 ]
 ```
 
-If there are no proxy settings found (or none is working), the launcher opens a simple dialog for the user to enter the proxy settings. Once the user enters its proxy settings, the launcher saves them in `application.yml`, and continue.
+If there are no proxy settings found (or none is working), the launcher opens a simple dialog for the user to enter the proxy settings. Once the user enters its proxy settings, the launcher saves non-secret proxy metadata in OS app data, stores remembered passwords in the OS keychain, and continues.
 
 ### SSL Certificate support
 
