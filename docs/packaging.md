@@ -13,17 +13,10 @@ In your app repository, add Launcher as a development dependency:
 uv add --dev launcher
 ```
 
-When developing against a local checkout of Launcher, use an editable dependency
-instead:
-
-```bash
-uv add --dev --editable ../launcher
-```
-
 ## 2. Initialize Launcher Packaging
 
 ```bash
-uv run launcher init
+uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git
 ```
 
 This creates the default app-owned launcher packaging folder:
@@ -41,13 +34,16 @@ Edit `packaging/launcher/application.yml` for your app:
 name: MyApp
 repository: https://github.com/my-org/myapp.git
 main: main.py
-path: "~/Applications/MyApp"
+path: "."
 auto_update: true
 configuration: pyproject.toml
 
 trust:
   mode: signed_manifest
+  # Replace this with the public key printed by `launcher release keygen`
   public_key: "<base64-ed25519-public-key>"
+  # These default URLs match the manifest and signature produced by
+  # `launcher release sign` and uploaded by `launcher release upload`.
   manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
 ```
@@ -65,6 +61,23 @@ uv run launcher release keygen
 
 This creates `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the
 public key to place in `packaging/launcher/application.yml`.
+
+Replace:
+
+```yaml
+public_key: "<base64-ed25519-public-key>"
+```
+
+with the printed public key. The private key stays outside git and is used later
+by `launcher release sign`.
+
+The generated `manifest_url` and `signature_url` point to the release assets
+that the launcher downloads at runtime. The defaults match the files produced by
+`launcher release sign` and uploaded by `launcher release upload`. If you change
+`repository` after running `init`, update those two URLs too, or rerun
+`init --force` with the real repository. Edit them only for custom hosting,
+custom asset paths, or renamed manifest/signature files. `{version}` is replaced
+with the release tag the launcher is trying to run.
 
 ## 4. Build The Launcher
 

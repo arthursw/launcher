@@ -10,6 +10,7 @@ from typing import Optional, Sequence
 
 from launcher.config import load_config
 from launcher.gui.base import BaseGUI
+from launcher.repository import parse_repository_url
 from launcher.worker import EventType, LauncherWorker, create_queues
 
 DEFAULT_CONFIG_NAME = "application.yml"
@@ -252,7 +253,7 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--name", default="MyApp", help="Application display name")
     parser.add_argument("--repository", default="https://github.com/my-org/myapp.git")
     parser.add_argument("--main", default="main.py", help="Main Python file inside downloaded app sources")
-    parser.add_argument("--path", default="~/Applications/{name}", help="Install path for downloaded app sources")
+    parser.add_argument("--path", default=".", help="Install path for downloaded app sources")
     parser.add_argument("--configuration", default="pyproject.toml", help="Dependency config inside app sources")
     parser.add_argument("--force", action="store_true", help="Overwrite generated files if they already exist")
     args = parser.parse_args(argv)
@@ -281,7 +282,10 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
                 "",
                 "trust:",
                 "  mode: signed_manifest",
+                "  # Replace this with the public key printed by: launcher release keygen",
                 '  public_key: "<base64-ed25519-public-key>"',
+                "  # These default URLs match the manifest and signature produced by",
+                "  # launcher release sign and uploaded by launcher release upload.",
                 f'  manifest_url: "{manifest_url}"',
                 f'  signature_url: "{signature_url}"',
                 "",
@@ -332,22 +336,16 @@ def _repo_name(repository: str) -> str:
 
 def _release_asset_urls(repository: str) -> tuple[str, str]:
     """Infer release asset URLs for generated config when possible."""
-    cleaned = repository.rstrip("/").removesuffix(".git")
-    owner_repo = ""
-    if cleaned.startswith("https://github.com/"):
-        owner_repo = cleaned.removeprefix("https://github.com/")
-        base = f"https://github.com/{owner_repo}/releases/download/{{version}}"
-    elif cleaned.startswith("git@github.com:"):
-        owner_repo = cleaned.removeprefix("git@github.com:")
-        base = f"https://github.com/{owner_repo}/releases/download/{{version}}"
-    elif cleaned.startswith("https://gitlab.com/"):
-        owner_repo = cleaned.removeprefix("https://gitlab.com/")
-        base = f"https://gitlab.com/{owner_repo}/-/releases/{{version}}/downloads"
-    elif cleaned.startswith("git@gitlab.com:"):
-        owner_repo = cleaned.removeprefix("git@gitlab.com:")
-        base = f"https://gitlab.com/{owner_repo}/-/releases/{{version}}/downloads"
-    else:
+    try:
+        repo = parse_repository_url(repository.rstrip("/").removesuffix(".git"))
+    except ValueError:
         base = f"https://github.com/my-org/{_repo_name(repository)}/releases/download/{{version}}"
+    else:
+        owner_repo = f"{repo.owner}/{repo.repo}"
+        if "gitlab" in repo.host.lower():
+            base = f"https://{repo.host}/{owner_repo}/-/releases/{{version}}/downloads"
+        else:
+            base = f"https://{repo.host}/{owner_repo}/releases/download/{{version}}"
 
     return (
         f"{base}/launcher-manifest.yml",

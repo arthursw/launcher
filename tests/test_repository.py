@@ -83,6 +83,18 @@ class TestParseRepositoryUrl:
         assert result.repo == "project"
         assert result.api_base == "https://gitlab.mycompany.com/api/v4"
 
+    def test_self_hosted_gitlab_nested_group(self):
+        """Test parsing GitLab repositories in nested groups."""
+        result = parse_repository_url("https://gitlab.example.com/group/subgroup/project.git")
+        assert result.host == "gitlab.example.com"
+        assert result.owner == "group/subgroup"
+        assert result.repo == "project"
+        assert result.api_base == "https://gitlab.example.com/api/v4"
+
+        project_id = quote_plus("group/subgroup/project")
+        assert result.releases_endpoint == f"/projects/{project_id}/releases"
+        assert result.archive_endpoint == f"/projects/{project_id}/repository/archive.zip?sha={{ref}}"
+
     def test_invalid_url_raises_error(self):
         """Test that invalid URLs raise ValueError."""
         with pytest.raises(ValueError, match="Unrecognized repository URL format"):

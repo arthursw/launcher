@@ -178,6 +178,21 @@ class TestAppConfig:
         )
         assert config.sources_path == Path("/tmp/apps/testapp-release_v1.0.0")
 
+    def test_relative_sources_path_uses_app_data_dir(self, tmp_path, monkeypatch):
+        """Relative source roots should not depend on the process working directory."""
+        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        config = AppConfig(
+            name="Test App",
+            main="main.py",
+            path=".",
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+        )
+        assert config.sources_path == tmp_path / "runtime" / "Test_App" / "testapp-v1.0.0"
+
 
 class TestLoadConfig:
     """Tests for load_config function."""

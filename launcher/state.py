@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import platform
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +12,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import yaml
 
 from .config import ProxySettings
+from .paths import get_runtime_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +44,7 @@ class LauncherState:
     @classmethod
     def for_app(cls, app_name: str, state_dir: Optional[Path] = None) -> "LauncherState":
         """Load state for an application."""
-        env_state_dir = os.environ.get("LAUNCHER_STATE_DIR")
-        root = state_dir or (
-            Path(env_state_dir) / sanitize_state_name(app_name) if env_state_dir else None
-        )
-        root = root or get_default_state_dir(app_name)
+        root = state_dir or get_runtime_data_dir(app_name)
         path = root / "launcher-state.yml"
         return cls.load(app_name, path)
 
@@ -128,23 +123,6 @@ class LauncherState:
         self.proxy_ssl_cert_file = proxy.ssl_cert_file
         self.session_proxy_settings = proxy
         self.save()
-
-
-def get_default_state_dir(app_name: str) -> Path:
-    """Return the OS-specific runtime state directory for an application."""
-    safe_name = sanitize_state_name(app_name)
-    system = platform.system()
-    if system == "Darwin":
-        return Path.home() / "Library" / "Application Support" / safe_name
-    if system == "Windows":
-        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / safe_name
-    return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / safe_name
-
-
-def sanitize_state_name(app_name: str) -> str:
-    """Sanitize application names before using them in state paths."""
-    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in app_name).strip("._-")
-    return safe_name or "launcher"
 
 
 def _credential_from_dict(data: Optional[dict[str, Any]]) -> Optional[ProxyCredential]:

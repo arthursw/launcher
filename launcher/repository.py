@@ -20,10 +20,10 @@ class RepositoryInfo:
 
 
 # SSH pattern: git@github.com:owner/repo.git
-SSH_PATTERN = re.compile(r"^git@([^:]+):([^/]+)/([^/]+?)(?:\.git)?$")
+SSH_PATTERN = re.compile(r"^git@([^:]+):(.+)$")
 
 # HTTPS pattern: https://github.com/owner/repo.git
-HTTPS_PATTERN = re.compile(r"^https?://([^/]+)/([^/]+)/([^/]+?)(?:\.git)?$")
+HTTPS_PATTERN = re.compile(r"^https?://([^/]+)/(.+)$")
 
 
 def parse_repository_url(url: str) -> RepositoryInfo:
@@ -46,16 +46,26 @@ def parse_repository_url(url: str) -> RepositoryInfo:
     # Try SSH pattern first
     match = SSH_PATTERN.match(url)
     if match:
-        host, owner, repo = match.groups()
+        host, path = match.groups()
+        owner, repo = _split_repository_path(path)
         return _create_repository_info(host, owner, repo)
 
     # Try HTTPS pattern
     match = HTTPS_PATTERN.match(url)
     if match:
-        host, owner, repo = match.groups()
+        host, path = match.groups()
+        owner, repo = _split_repository_path(path)
         return _create_repository_info(host, owner, repo)
 
     raise ValueError(f"Unrecognized repository URL format: {url}")
+
+
+def _split_repository_path(path: str) -> tuple[str, str]:
+    cleaned = path.strip("/").removesuffix(".git")
+    parts = [part for part in cleaned.split("/") if part]
+    if len(parts) < 2:
+        raise ValueError(f"Unrecognized repository path format: {path}")
+    return "/".join(parts[:-1]), parts[-1]
 
 
 def _create_repository_info(host: str, owner: str, repo: str) -> RepositoryInfo:

@@ -5,7 +5,8 @@ import os
 import yaml
 
 from launcher.config import ProxySettings
-from launcher.state import LauncherState, get_default_state_dir
+from launcher.paths import get_default_state_dir
+from launcher.state import LauncherState
 
 
 def test_runtime_state_persists_version_and_dependency_hash(tmp_path):
@@ -94,3 +95,12 @@ def test_default_state_paths(monkeypatch, tmp_path):
     assert str(get_default_state_dir("My App")).endswith(
         os.path.join("Library", "Application Support", "My_App")
     )
+
+
+def test_state_for_app_uses_launcher_state_dir(monkeypatch, tmp_path):
+    """The test/runtime override should redirect per-app state roots."""
+    monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+
+    state = LauncherState.for_app("My App")
+
+    assert state.state_path == tmp_path / "runtime" / "My_App" / "launcher-state.yml"

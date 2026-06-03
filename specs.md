@@ -72,7 +72,7 @@ api: https://api.github.com/                                             # The A
 releases_endpoint: /repos/owner/exampleapp/releases/latest               # The API endpoint to get the latest release (optional if repository is provided)
 archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
 main: main.py                                                            # The main script to execute in the sources
-path: "."                                                                # The directory in which to extract the sources (could be "~/Applications/")
+path: "."                                                                # The directory in which to extract the sources; relative paths are resolved inside the launcher's per-app runtime data directory.
 version: v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
@@ -133,8 +133,8 @@ This launcher will:
   `packaging/launcher/application.yml` during development and build tooling
 - if `auto_update`: check the latest release from `api`/`releases_endpoint` and use this latest release (which has a corresponding tag) in the following format: `tagname`
 - otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
-- in all cases: check if the sources for this current version (`appname-tagname`) exist at `path` (if a folder named `appname-tagname` exists at the `path` location)
-- if the sources do not exist: download them from the `archive_endpoint` and extract them in the `path`
+- in all cases: check if the sources for this current version (`appname-tagname`) exist at `path`; relative `path` values are resolved inside the launcher's per-app runtime data directory.
+- if the sources do not exist: download them from the `archive_endpoint` and extract them in the resolved `path`
 - save mutable runtime values such as installed version in OS app data, not in
   the packaged config
 - get or create the environment and execute the main script: 

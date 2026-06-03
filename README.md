@@ -54,7 +54,7 @@ In your app repository:
 
 ```bash
 uv add --dev launcher
-uv run launcher init
+uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git
 ```
 
 This creates:
@@ -72,7 +72,16 @@ Edit `packaging/launcher/application.yml`, then create the signing key:
 uv run launcher release keygen
 ```
 
-Put the printed public key in the config, then build the launcher:
+This writes `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the
+public key. Replace `trust.public_key` in
+`packaging/launcher/application.yml` with that printed value. Keep the generated
+`manifest_url` and `signature_url` if you will upload
+`launcher-manifest.yml` and `launcher-manifest.yml.sig` as normal release
+assets. If you change `repository` after running `init`, update those two URLs
+too, or rerun `init --force` with the real repository. Edit them manually for
+custom hosting or custom asset names.
+
+Then build the launcher:
 
 ```bash
 uv run --with pyinstaller launcher build

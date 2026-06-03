@@ -14,7 +14,7 @@ def write_config(root: Path) -> Path:
                 "name: MyApp",
                 "repository: https://github.com/my-org/myapp.git",
                 "main: main.py",
-                "path: ~/Applications/MyApp",
+                'path: "."',
                 "auto_update: true",
                 "configuration: pyproject.toml",
             ]
@@ -43,6 +43,8 @@ def test_build_spec_only_writes_generated_spec(tmp_path, monkeypatch):
     """Spec-only mode should write a PyInstaller spec without running PyInstaller."""
     monkeypatch.chdir(tmp_path)
     config = write_config(tmp_path)
+    icon = config.parent / "icon_128x128.png"
+    icon.write_bytes(b"png")
 
     result = build_cli.main(["--spec-only"])
 
@@ -52,8 +54,10 @@ def test_build_spec_only_writes_generated_spec(tmp_path, monkeypatch):
     text = spec.read_text()
     assert "launcher_build_entry.py" in text
     assert "packaging/launcher/application.yml" in text
+    assert str(config.resolve()) in text
+    assert str(icon.resolve()) in text
+    assert f"icon={str(icon.resolve())!r}" in text
     assert "dist/launcher" in text
-    assert str(config) not in text
 
 
 def test_build_plan_allows_explicit_config_and_spec(tmp_path):

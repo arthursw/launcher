@@ -57,7 +57,8 @@ def create_build_plan(
 
     icon_path = _find_icon(config_dir)
     if icon_path:
-        datas.append((icon_path.resolve().as_posix(), "resources"))
+        icon_path = icon_path.resolve()
+        datas.append((icon_path.as_posix(), "resources"))
 
     output_dir = output_dir.expanduser().resolve()
     custom_spec = spec_path is not None
@@ -94,7 +95,7 @@ def write_generated_files(plan: BuildPlan) -> None:
 
 def render_spec(plan: BuildPlan) -> str:
     """Render a PyInstaller spec for the launcher executable."""
-    datas = ",\n        ".join(repr((_relative_source(src), dest)) for src, dest in plan.datas)
+    datas = ",\n        ".join(repr((src, dest)) for src, dest in plan.datas)
     icon_expr = "None"
     if plan.icon_path:
         icon_expr = repr(plan.icon_path.as_posix())

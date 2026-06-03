@@ -6,6 +6,8 @@ from typing import Any, Optional, Union
 
 import yaml
 
+from .paths import get_runtime_data_dir
+
 VALID_CERT_EXTENSIONS = (".pem", ".crt", ".cer")
 
 
@@ -128,6 +130,7 @@ class AppConfig:
         Returns:
             Path to sources directory (e.g., ~/apps/myapp-v1.2.3)
         """
+        root = self._sources_root()
         ver = version or self.version
         if ver:
             # Sanitize app name (lowercase, no special chars except dash/underscore)
@@ -136,8 +139,14 @@ class AppConfig:
             )
             sanitized_version = sanitize_version_for_path(ver)
             folder_name = f"{sanitized_name}-{sanitized_version}"
-            return Path(self.path).expanduser() / folder_name
-        return Path(self.path).expanduser()
+            return root / folder_name
+        return root
+
+    def _sources_root(self) -> Path:
+        root = Path(self.path).expanduser()
+        if root.is_absolute():
+            return root
+        return get_runtime_data_dir(self.name) / root
 
     @property
     def sources_path(self) -> Path:

@@ -192,7 +192,11 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     assert "name: MyApp" in text
     assert "repository: https://github.com/my-org/myapp.git" in text
     assert "main: src/myapp/__main__.py" in text
+    assert 'path: "."' in text
+    assert "# Replace this with the public key printed by: launcher release keygen" in text
     assert "public_key: \"<base64-ed25519-public-key>\"" in text
+    assert "# These default URLs match the manifest and signature produced by" in text
+    assert "# launcher release sign and uploaded by launcher release upload." in text
     assert "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml" in text
 
 
@@ -214,6 +218,52 @@ def test_launcher_init_infers_gitlab_release_asset_urls(tmp_path, monkeypatch):
     assert result == 0
     assert "https://gitlab.com/my-org/myapp/-/releases/{version}/downloads/launcher-manifest.yml" in text
     assert "https://github.com/my-org/myapp" not in text
+
+
+def test_launcher_init_infers_self_hosted_gitlab_release_asset_urls(tmp_path, monkeypatch):
+    """Self-hosted GitLab repositories should use their own release asset URLs."""
+    monkeypatch.chdir(tmp_path)
+
+    result = package_main.main(
+        [
+            "init",
+            "--name",
+            "MyApp",
+            "--repository",
+            "https://gitlab.inria.fr/sairpico/bioimageflow-platform",
+        ]
+    )
+
+    text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
+    assert result == 0
+    assert (
+        "https://gitlab.inria.fr/sairpico/bioimageflow-platform/-/releases/{version}/downloads/"
+        "launcher-manifest.yml"
+    ) in text
+    assert "https://github.com/my-org/bioimageflow-platform" not in text
+
+
+def test_launcher_init_infers_nested_gitlab_release_asset_urls(tmp_path, monkeypatch):
+    """GitLab repositories in nested groups should keep the full project path."""
+    monkeypatch.chdir(tmp_path)
+
+    result = package_main.main(
+        [
+            "init",
+            "--name",
+            "MyApp",
+            "--repository",
+            "https://gitlab.example.com/group/subgroup/project.git",
+        ]
+    )
+
+    text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
+    assert result == 0
+    assert (
+        "https://gitlab.example.com/group/subgroup/project/-/releases/{version}/downloads/"
+        "launcher-manifest.yml"
+    ) in text
+    assert "https://github.com/my-org/project" not in text
 
 
 def test_launcher_init_refuses_to_overwrite_without_force(tmp_path, monkeypatch, capsys):
