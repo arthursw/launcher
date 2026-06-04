@@ -1,5 +1,6 @@
 """Tests for script runner errors."""
 
+import os
 from unittest.mock import MagicMock
 
 from launcher.config import AppConfig
@@ -31,6 +32,80 @@ def test_start_missing_main_script_explains_config_and_archive(tmp_path):
     assert str(sources / "myapp-v1.2.3") in message
     assert "Update `main`" in message
     assert "include that file in the release archive" in message
+
+
+def test_start_uses_inferred_working_directory_and_pythonpath(tmp_path, monkeypatch):
+    """A src-layout project should launch with importable project paths."""
+    monkeypatch.setenv("PYTHONPATH", "existing")
+    sources = tmp_path / "sources"
+    app_sources = sources / "myapp-v1.2.3"
+    main_script = app_sources / "backend" / "src" / "my_app" / "desktop.py"
+    main_script.parent.mkdir(parents=True)
+    main_script.write_text("print('hello')")
+    (app_sources / "backend" / "pyproject.toml").write_text("[project]\nname='my-app'\n")
+    config = AppConfig(
+        name="MyApp",
+        main="backend/src/my_app/desktop.py",
+        path=str(sources),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+        configuration="backend/pyproject.toml",
+    )
+    process = MagicMock()
+    env = MagicMock()
+    env.execute_commands.return_value = process
+    env_manager = MagicMock()
+    env_manager.get_process_logger.return_value = None
+    runner = ScriptRunner(config, env_manager=env_manager, env=env)
+
+    assert runner.start() == process
+
+    env.execute_commands.assert_called_once()
+    call = env.execute_commands.call_args
+    assert call.kwargs["commands"] == [f'python -u "{main_script}"']
+    assert call.kwargs["wait"] is False
+    assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "backend"
+    pythonpath = call.kwargs["popen_kwargs"]["env"]["PYTHONPATH"].split(os.pathsep)
+    assert pythonpath == [
+        str(app_sources / "backend" / "src"),
+        str(app_sources / "backend"),
+        "existing",
+    ]
+
+
+def test_start_uses_explicit_working_directory_and_pythonpath(tmp_path, monkeypatch):
+    """Explicit launch paths should override inferred import paths."""
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    sources = tmp_path / "sources"
+    app_sources = sources / "myapp-v1.2.3"
+    main_script = app_sources / "scripts" / "desktop.py"
+    main_script.parent.mkdir(parents=True)
+    (app_sources / "runtime").mkdir()
+    main_script.write_text("print('hello')")
+    config = AppConfig(
+        name="MyApp",
+        main="scripts/desktop.py",
+        path=str(sources),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+        working_directory="runtime",
+        pythonpath=["lib", "plugins"],
+    )
+    process = MagicMock()
+    env = MagicMock()
+    env.execute_commands.return_value = process
+    env_manager = MagicMock()
+    env_manager.get_process_logger.return_value = None
+    runner = ScriptRunner(config, env_manager=env_manager, env=env)
+
+    runner.start()
+
+    call = env.execute_commands.call_args
+    assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "runtime"
+    assert call.kwargs["popen_kwargs"]["env"]["PYTHONPATH"].split(os.pathsep) == [
+        str(app_sources / "lib"),
+        str(app_sources / "plugins"),
+    ]
 
 
 def test_ensure_still_running_rejects_immediate_exit(tmp_path):

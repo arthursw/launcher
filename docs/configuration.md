@@ -41,6 +41,10 @@ trust:
   downloaded repository root. The file must exist. Set `configuration: null`
   only for apps that intentionally have no dependency config file.
 - `extras`: optional dependency groups to install from `configuration`.
+- `working_directory`: optional app launch directory, relative to the downloaded
+  repository root.
+- `pythonpath`: optional list of import paths to prepend before starting the
+  app, relative to the downloaded repository root.
 
 If your app code lives below the repository root, use paths from the repository
 root:
@@ -55,6 +59,21 @@ extras:
 This is equivalent to installing the dependency file with the optional
 `desktop` group. For a `pyproject.toml` managed by `uv`, use the same group name
 you would pass to `uv sync --extra desktop`.
+
+By default, Launcher starts the app from the directory containing
+`configuration`. In the example above, the working directory is `backend/`.
+Launcher also prepends that directory to `PYTHONPATH`, and prepends
+`backend/src` when that folder exists. That makes common `src/` Python projects
+importable without extra config.
+
+For unusual layouts, override those launch paths explicitly:
+
+```yaml
+working_directory: backend
+pythonpath:
+  - backend/src
+  - backend/plugins
+```
 
 If your repository cannot be inferred automatically, you can use explicit API
 fields instead of `repository`:
@@ -117,6 +136,9 @@ trying to run.
 
 ```yaml
 version: v1.2.3
+working_directory: backend
+pythonpath:
+  - backend/src
 install: install.py
 reinstall_on_update: false
 gui_timeout: 3
@@ -125,6 +147,8 @@ init_timeout: 30
 ```
 
 - `version`: fixed version to use when `auto_update` is false.
+- `working_directory`: override the inferred app launch directory.
+- `pythonpath`: override inferred Python import paths.
 - `install`: optional Python install script in your app sources.
 - `reinstall_on_update`: rerun the install script after an update.
 - `gui_timeout`: seconds before showing a progress window.

@@ -181,6 +181,55 @@ class TestAppConfig:
 
         assert config.config_file_path is None
 
+    def test_infers_working_directory_from_configuration(self):
+        """Monorepo projects should launch from the dependency config directory."""
+        config = AppConfig(
+            name="TestApp",
+            main="backend/src/test_app/desktop.py",
+            path="/tmp/apps",
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="backend/pyproject.toml",
+        )
+
+        assert config.working_directory_path == Path("/tmp/apps/testapp-v1.0.0/backend")
+
+    def test_infers_pythonpath_from_working_directory_src(self, tmp_path):
+        """A src-layout project should make src and project root importable."""
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        (sources / "backend" / "src").mkdir(parents=True)
+        config = AppConfig(
+            name="TestApp",
+            main="backend/src/test_app/desktop.py",
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="backend/pyproject.toml",
+        )
+
+        assert config.pythonpath_paths == [
+            sources / "backend" / "src",
+            sources / "backend",
+        ]
+
+    def test_explicit_working_directory_and_pythonpath(self, tmp_path):
+        """Explicit launch paths override inferred defaults."""
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources.mkdir(parents=True)
+        config = AppConfig(
+            name="TestApp",
+            main="scripts/desktop.py",
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="pyproject.toml",
+            working_directory="runtime",
+            pythonpath=["lib", "plugins"],
+        )
+
+        assert config.working_directory_path == sources / "runtime"
+        assert config.pythonpath_paths == [sources / "lib", sources / "plugins"]
+
     def test_sources_path_sanitizes_version(self):
         """Release tags should not create nested paths."""
         config = AppConfig(
@@ -256,6 +305,8 @@ class TestLoadConfig:
             "version": "testapp-v1.0.0",
             "configuration": "requirements.txt",
             "extras": ["desktop"],
+            "working_directory": "backend",
+            "pythonpath": ["backend/src"],
             "install": "install.py",
             "reinstall_on_update": True,
             "gui_timeout": 5,
@@ -275,6 +326,8 @@ class TestLoadConfig:
         assert config.version == "testapp-v1.0.0"
         assert config.configuration == "requirements.txt"
         assert config.extras == ["desktop"]
+        assert config.working_directory == "backend"
+        assert config.pythonpath == ["backend/src"]
         assert config.install == "install.py"
         assert config.reinstall_on_update is True
         assert config.gui_timeout == 5
@@ -364,6 +417,21 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="'extras' must be a list of strings"):
             load_config(config_file)
 
+    def test_load_config_rejects_non_list_pythonpath(self, tmp_path):
+        """Python import path entries must be listed explicitly."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+            "pythonpath": "src",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with pytest.raises(ValueError, match="'pythonpath' must be a list of strings"):
+            load_config(config_file)
+
     def test_config_save(self, tmp_path):
         """Test saving config back to file."""
         config_data = {
@@ -378,12 +446,16 @@ class TestLoadConfig:
         config = load_config(config_file)
         config.version = "testapp-v2.0.0"
         config.extras = ["desktop"]
+        config.working_directory = "backend"
+        config.pythonpath = ["backend/src"]
         config.save()
 
         # Reload and verify
         reloaded = load_config(config_file)
         assert reloaded.version == "testapp-v2.0.0"
         assert reloaded.extras == ["desktop"]
+        assert reloaded.working_directory == "backend"
+        assert reloaded.pythonpath == ["backend/src"]
 
     def test_config_save_roundtrip_ssl_cert_file(self, tmp_path):
         """Test save + load roundtrip preserves ssl_cert_file."""

@@ -255,3 +255,23 @@
     path mistakes such as pointing at a root dependency file that is actually in
     a subdirectory.
 - Next: commit the verified launcher packaging workflow changes.
+
+## Iteration 17
+
+- Planned: make launched source-layout apps import their own packages without
+  requiring extra config for common monorepo layouts.
+- Implemented:
+  - Added `working_directory` and `pythonpath` config fields.
+  - Inferred the launch working directory from the directory containing
+    `configuration` when `working_directory` is not set.
+  - Inferred `PYTHONPATH` from `working_directory/src` when present, plus the
+    working directory itself.
+  - Passed the launch cwd and merged `PYTHONPATH` through Wetlands subprocess
+    options.
+  - Documented inferred launch paths and explicit overrides in the packaging and
+    configuration guides.
+- Learned:
+  - Running an absolute script inside a `src/` layout only puts the script's
+    package directory on `sys.path`; the parent `src/` directory must be made
+    importable separately.
+- Next: run full lint, tests, whitespace, and example-string verification.

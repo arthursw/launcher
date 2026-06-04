@@ -80,6 +80,8 @@ auto_update: true                                                        # Wheth
 configuration: pyproject.toml                                            # The dependency config file in the downloaded sources. Can be null only when no dependency config exists.
 extras:                                                                  # Optional dependency groups from the dependency config, such as uv --extra groups.
   - desktop
+working_directory: null                                                  # Optional app launch directory. Defaults to the directory containing configuration.
+pythonpath: null                                                         # Optional import paths. Defaults to working_directory/src when present, then working_directory.
 install: install.py                                                      # The install script with additional install commands
 reinstall_on_update: false                                               # Whether to re-run the install script when new sources are downloaded (even if the environment already exists)
 gui_timeout: 3                                                           # The time (in seconds) before opening the GUI which displays what's happening
@@ -149,7 +151,8 @@ This launcher will:
     - run the python install script defined by the `install` attribute if any
   - if the environment already exists but new sources were just downloaded and `reinstall_on_update` is true:
     - run the python install script defined by the `install` attribute
-- run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
+- run the main script defined by the `main` attribute (located in `path`/`appname-tagname`) from the configured or inferred `working_directory`
+- prepend configured or inferred `pythonpath` entries so source-layout packages are importable
 - if `init_message` is configured, read stdout and wait for it; this confirms the app finished initializing
 - if the `init_message` is not in stdout for `init_timeout` seconds: explain that reinstalling can fix a corrupted local environment but not a broken release, then ask the user to reinstall, exit, or wait more.
 - if `init_message` is not configured, verify that the app does not exit immediately, then let it keep running.

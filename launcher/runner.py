@@ -1,6 +1,7 @@
 """Script execution and initialization monitoring."""
 
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -107,6 +108,15 @@ class ScriptRunner:
                 "or include that file in the release archive."
             )
 
+        working_directory = self.config.working_directory_path
+        if not working_directory.exists():
+            raise RunnerError(
+                f"Configured working directory not found: {working_directory}\n"
+                "Launcher uses `working_directory` when set. Otherwise, it defaults "
+                "to the directory containing `configuration`, or to the downloaded "
+                "sources directory when `configuration: null`."
+            )
+
         logger.info(f"Starting main script: {main_script_path}")
 
         def on_output(line: str, _context: dict) -> None:
@@ -117,6 +127,7 @@ class ScriptRunner:
 
         self._process = self.env.execute_commands(
             commands=[f'python -u "{main_script_path}"'],
+            popen_kwargs=self._launch_popen_kwargs(),
             wait=False,
         )
 
@@ -126,6 +137,20 @@ class ScriptRunner:
             self._process_logger.subscribe(on_output, include_history=False)
 
         return self._process
+
+    def _launch_popen_kwargs(self) -> dict:
+        env = os.environ.copy()
+        pythonpath_paths = [str(path) for path in self.config.pythonpath_paths]
+        existing_pythonpath = env.get("PYTHONPATH")
+        if existing_pythonpath:
+            pythonpath_paths.append(existing_pythonpath)
+        if pythonpath_paths:
+            env["PYTHONPATH"] = os.pathsep.join(pythonpath_paths)
+
+        return {
+            "cwd": self.config.working_directory_path,
+            "env": env,
+        }
 
     def ensure_still_running(self, grace_seconds: float = 1.0) -> None:
         """Raise if the launched application exits immediately."""

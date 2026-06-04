@@ -34,6 +34,12 @@ configuration: pyproject.toml
 # installed during development with: uv sync --extra desktop
 # extras:
 #   - desktop
+# Launcher starts from the dependency config directory by default and adds that
+# directory, plus its src/ folder when present, to PYTHONPATH. Override only for
+# unusual layouts:
+# working_directory: backend
+# pythonpath:
+#   - backend/src
 # install: install.py
 reinstall_on_update: false
 

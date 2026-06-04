@@ -99,6 +99,8 @@ class AppConfig:
     auto_update: bool = True
     configuration: Optional[str] = "pyproject.toml"
     extras: list[str] = field(default_factory=list)
+    working_directory: Optional[str] = None
+    pythonpath: Optional[list[str]] = None
     install: Optional[str] = None
     reinstall_on_update: bool = False
     gui_timeout: int = 3
@@ -120,6 +122,13 @@ class AppConfig:
             isinstance(item, str) for item in self.extras
         ):
             raise ValueError("'extras' must be a list of strings")
+        if self.working_directory is not None and not isinstance(self.working_directory, str):
+            raise ValueError("'working_directory' must be a string")
+        if self.pythonpath is not None and (
+            not isinstance(self.pythonpath, list)
+            or not all(isinstance(item, str) for item in self.pythonpath)
+        ):
+            raise ValueError("'pythonpath' must be a list of strings")
 
     @property
     def env_name(self) -> str:
@@ -172,6 +181,39 @@ class AppConfig:
         return self.sources_path / self.configuration
 
     @property
+    def working_directory_path(self) -> Path:
+        """Get the directory where the app process should start."""
+        if self.working_directory is not None:
+            return self._source_relative_path(self.working_directory)
+
+        if self.configuration is not None:
+            config_parent = Path(self.configuration).parent
+            if config_parent != Path("."):
+                return self.sources_path / config_parent
+
+        return self.sources_path
+
+    @property
+    def pythonpath_paths(self) -> list[Path]:
+        """Get paths that should be prepended to PYTHONPATH for the app."""
+        if self.pythonpath is not None:
+            return [self._source_relative_path(path) for path in self.pythonpath]
+
+        working_directory = self.working_directory_path
+        paths: list[Path] = []
+        src_dir = working_directory / "src"
+        if src_dir.is_dir():
+            paths.append(src_dir)
+        paths.append(working_directory)
+        return paths
+
+    def _source_relative_path(self, value: str) -> Path:
+        path = Path(value).expanduser()
+        if path.is_absolute():
+            return path
+        return self.sources_path / path
+
+    @property
     def install_script_path(self) -> Optional[Path]:
         """Get the full path to the install script if defined."""
         if self.install:
@@ -207,6 +249,10 @@ class AppConfig:
         data["configuration"] = self.configuration
         if self.extras:
             data["extras"] = self.extras
+        if self.working_directory is not None:
+            data["working_directory"] = self.working_directory
+        if self.pythonpath is not None:
+            data["pythonpath"] = self.pythonpath
 
         if self.install:
             data["install"] = self.install
@@ -303,6 +349,8 @@ def load_config(config_path: Path) -> AppConfig:
         auto_update=data.get("auto_update", True),
         configuration=data.get("configuration", "pyproject.toml"),
         extras=data.get("extras", []),
+        working_directory=data.get("working_directory"),
+        pythonpath=data.get("pythonpath"),
         install=data.get("install"),
         reinstall_on_update=data.get("reinstall_on_update", False),
         gui_timeout=data.get("gui_timeout", 3),

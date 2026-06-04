@@ -83,6 +83,17 @@ the same group you install during development with `uv sync --extra desktop`.
 The configured dependency file must exist in the downloaded release archive. If
 your app intentionally has no dependency config file, set `configuration: null`.
 
+Launcher starts the app from the directory containing `configuration` and adds
+that directory to `PYTHONPATH`. If that directory has a `src/` folder, Launcher
+adds it too. For the example above, the inferred launch directory is `backend/`
+and `backend/src` is importable. Override this only for unusual layouts:
+
+```yaml
+working_directory: backend
+pythonpath:
+  - backend/src
+```
+
 ## 3. Create The Signing Key
 
 Generate the signing key once:
