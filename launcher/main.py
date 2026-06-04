@@ -3,6 +3,8 @@
 import argparse
 import logging
 import os
+import queue
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -16,11 +18,14 @@ from launcher.worker import EventType, LauncherWorker, create_queues
 DEFAULT_CONFIG_NAME = "application.yml"
 DEFAULT_PACKAGING_CONFIG = Path("packaging") / "launcher" / DEFAULT_CONFIG_NAME
 CONFIG_ENV_VAR = "LAUNCHER_CONFIG"
-INIT_ICON_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f"
-    b"\x00\x01\x01\x01\x00\x1f\xd4\x9d\xb8\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+DEFAULT_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+DEFAULT_SOURCE_ICON_NAME = "launcher.svg"
+DEFAULT_PNG_ICON_NAME = "launcher.png"
+INIT_ICON_NAMES = {
+    ".icns": "app.icns",
+    ".ico": "app.ico",
+    ".png": "icon_128x128.png",
+}
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -68,36 +73,49 @@ def run_with_delayed_gui(
     """Run the launcher while delaying GUI display until needed."""
     start_time = time.time()
     gui_shown = False
+    pending_events = []
 
     worker.start()
 
-    while worker.is_running():
+    while worker.is_running() or not event_queue.empty():
         elapsed = time.time() - start_time
 
         if not gui_shown and elapsed >= gui_timeout:
+            _restore_events(event_queue, pending_events)
             gui_shown = True
             gui.run()
             break
 
         try:
-            event = event_queue.get(timeout=0.1)
-            event_queue.put(event)
+            event = event_queue.get(timeout=0.1 if worker.is_running() else 0)
+            pending_events.append(event)
 
             if event.type == EventType.COMPLETE:
+                _restore_events(event_queue, pending_events)
                 break
             if event.type == EventType.ERROR:
+                _restore_events(event_queue, pending_events)
                 print(f"Error: {event.message}", file=sys.stderr)
-                break
-            if event.type == EventType.PROXY_REQUIRED:
                 gui_shown = True
                 gui.run()
                 break
-        except Exception:
+            if event.type == EventType.PROXY_REQUIRED:
+                _restore_events(event_queue, pending_events)
+                gui_shown = True
+                gui.run()
+                break
+        except queue.Empty:
             pass
 
     if not gui_shown:
         while worker.is_running():
             time.sleep(0.1)
+
+
+def _restore_events(event_queue, events) -> None:
+    """Put inspected events back for the GUI to consume."""
+    while events:
+        event_queue.put(events.pop(0))
 
 
 def _unique_paths(paths: list[Path]) -> list[Path]:
@@ -255,12 +273,18 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--main", default="main.py", help="Main Python file inside downloaded app sources")
     parser.add_argument("--path", default=".", help="Install path for downloaded app sources")
     parser.add_argument("--configuration", default="pyproject.toml", help="Dependency config inside app sources")
+    parser.add_argument("--icon", type=Path, default=None, help="Custom launcher icon (.icns, .ico, or .png)")
     parser.add_argument("--force", action="store_true", help="Overwrite generated files if they already exist")
     args = parser.parse_args(argv)
 
     config_path = args.config.expanduser()
-    icon_path = config_path.parent / "icon_128x128.png"
-    existing = [path for path in (config_path, icon_path) if path.exists()]
+    icon_paths = _resolve_init_icons(args.icon, config_path.parent)
+    if icon_paths is None:
+        return 1
+
+    write_paths = [config_path]
+    write_paths.extend(destination for _source, destination in icon_paths)
+    existing = [path for path in write_paths if path.exists()]
     if existing and not args.force:
         names = ", ".join(str(path) for path in existing)
         print(f"Error: launcher packaging file already exists: {names}", file=sys.stderr)
@@ -278,7 +302,12 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
                 f"main: {args.main}",
                 f'path: "{install_path}"',
                 "auto_update: true",
+                "# The dependency config must exist in the downloaded sources. Use",
+                "# configuration: null only when the app intentionally has no dependency file.",
                 f"configuration: {args.configuration}",
+                "# If the app needs optional Python dependencies, list their groups:",
+                "# extras:",
+                "#   - desktop",
                 "",
                 "trust:",
                 "  mode: signed_manifest",
@@ -292,11 +321,46 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
             ]
         )
     )
-    icon_path.write_bytes(INIT_ICON_BYTES)
+    for source_icon, icon_path in icon_paths:
+        if source_icon.resolve() != icon_path.resolve():
+            shutil.copy2(source_icon, icon_path)
 
     print(f"Created {config_path}")
-    print(f"Created {icon_path}")
+    for _source_icon, icon_path in icon_paths:
+        print(f"Created {icon_path}")
     return 0
+
+
+def _resolve_init_icons(source: Path | None, packaging_dir: Path) -> list[tuple[Path, Path]] | None:
+    if source is None:
+        return _default_init_icons(packaging_dir)
+
+    source = source.expanduser()
+    if not source.is_file():
+        print(f"Error: Icon file not found: {source}", file=sys.stderr)
+        return None
+
+    suffix = source.suffix.lower()
+    icon_name = INIT_ICON_NAMES.get(suffix)
+    if not icon_name:
+        supported = ", ".join(sorted(INIT_ICON_NAMES))
+        print(f"Error: Unsupported icon format: {source.suffix or source.name}. Expected one of: {supported}", file=sys.stderr)
+        return None
+
+    return [(source, packaging_dir / icon_name)]
+
+
+def _default_init_icons(packaging_dir: Path) -> list[tuple[Path, Path]]:
+    icons: list[tuple[Path, Path]] = []
+    source_svg = DEFAULT_ASSETS_DIR / DEFAULT_SOURCE_ICON_NAME
+    if source_svg.is_file():
+        icons.append((source_svg, packaging_dir / DEFAULT_SOURCE_ICON_NAME))
+
+    source_png = DEFAULT_ASSETS_DIR / DEFAULT_PNG_ICON_NAME
+    if source_png.is_file():
+        icons.append((source_png, packaging_dir / INIT_ICON_NAMES[".png"]))
+
+    return icons
 
 
 def main(argv: Sequence[str] | Path | None = None, config_path: Optional[Path] = None) -> int:

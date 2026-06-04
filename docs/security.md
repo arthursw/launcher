@@ -91,13 +91,14 @@ uv run launcher release upload
 
 By default, `sign`:
 
-- looks for one archive in `dist/`;
+- looks for one `.zip` archive in `dist/`;
 - infers the version from the archive filename, such as `myapp-v1.2.3.zip`;
+- checks that the archive can be safely extracted by the packaged launcher;
 - writes `dist/launcher-manifest.yml`;
 - writes `dist/launcher-manifest.yml.sig`.
 
-`verify` checks the signature and confirms that the archive still matches the
-hash in the manifest.
+`verify` checks the signature, confirms that the archive still matches the hash
+in the manifest, and repeats the same archive safety checks before upload.
 
 `upload` sends the manifest and signature to the release using the official
 provider CLI:

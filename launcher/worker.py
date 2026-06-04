@@ -13,7 +13,7 @@ from .config import AppConfig, ProxySettings, load_config
 from .environment import LauncherEnvironmentManager, EnvironmentError, compute_dependency_hash
 from .proxy import discover_proxy_settings
 from .runner import ScriptRunner, InitTimeoutError
-from .updater import NetworkError, DownloadError, update_sources
+from .updater import HTTPStatusError, NetworkError, DownloadError, UpdaterError, update_sources
 from .state import LauncherState
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,14 @@ class LauncherWorker:
         self._send_event(WorkerEvent(
             type=EventType.INIT_TIMEOUT,
             request_id=request_id,
-            message=f"Init message not received within {self._config.init_timeout} seconds",
+            message=(
+                "The application started but did not report that it finished "
+                f"initializing within {self._config.init_timeout} seconds. "
+                "You can keep waiting if startup is slow. Reinstalling recreates "
+                "the local environment and may fix a corrupted local install, but "
+                "it will not fix a broken release; publish a fixed release and "
+                "restart the launcher for that case."
+            ),
         ))
 
         # Wait for response
@@ -321,9 +328,12 @@ class LauncherWorker:
 
             # Start main script
             self._log("Starting application...")
-            self._runner.start(
+            process = self._runner.start(
                 output_callback=lambda line: self._log(f"[app] {line}")
             )
+            process_id = getattr(process, "pid", None)
+            if process_id:
+                self._log(f"Application process started with PID {process_id}")
 
             # Wait for init message
             if self._config.init_message:
@@ -344,6 +354,9 @@ class LauncherWorker:
                         return
                     else:
                         raise
+            else:
+                self._runner.ensure_still_running()
+                self._log("No init_message configured; launcher will exit and leave the application running.")
 
             # Complete
             self._completed = True
@@ -353,6 +366,10 @@ class LauncherWorker:
             self._error(f"Configuration not found: {e}")
         except ValueError as e:
             self._error(f"Invalid configuration: {e}")
+        except HTTPStatusError as e:
+            self._error(f"Update error: {e}")
+        except UpdaterError as e:
+            self._error(f"Update error: {e}")
         except NetworkError as e:
             self._error(f"Network error: {e}")
         except DownloadError as e:

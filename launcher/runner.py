@@ -3,6 +3,7 @@
 import logging
 import subprocess
 import threading
+import time
 from typing import Callable, Optional
 
 from wetlands.environment import Environment
@@ -98,7 +99,13 @@ class ScriptRunner:
         """
         main_script_path = self.config.main_script_path
         if not main_script_path.exists():
-            raise RunnerError(f"Main script not found: {main_script_path}")
+            raise RunnerError(
+                f"Configured main script not found: {main_script_path}\n"
+                f"Launcher looked for `main: {self.config.main}` inside the downloaded sources at "
+                f"{self.config.sources_path}.\n"
+                "Update `main` in packaging/launcher/application.yml to the Python file that starts your app, "
+                "or include that file in the release archive."
+            )
 
         logger.info(f"Starting main script: {main_script_path}")
 
@@ -119,6 +126,32 @@ class ScriptRunner:
             self._process_logger.subscribe(on_output, include_history=False)
 
         return self._process
+
+    def ensure_still_running(self, grace_seconds: float = 1.0) -> None:
+        """Raise if the launched application exits immediately."""
+        if not self._process:
+            raise RunnerError("Application process was not started")
+
+        time.sleep(grace_seconds)
+        exit_code = self._process.poll()
+        if exit_code is None:
+            return
+
+        recent_output = self.recent_output()
+        message = (
+            f"Application exited immediately after launch with exit code {exit_code}.\n"
+            f"Launcher started `main: {self.config.main}` from {self.config.main_script_path}.\n"
+            "Run the same script from the configured environment to debug the app, "
+            "or configure `init_message` if Launcher should wait for a startup signal."
+        )
+        if recent_output:
+            message = f"{message}\nRecent application output:\n{recent_output}"
+        raise RunnerError(message)
+
+    def recent_output(self, max_lines: int = 20) -> str:
+        """Return recent captured app output."""
+        with self._lock:
+            return "\n".join(self._output_lines[-max_lines:])
 
     def wait_for_init(
         self,

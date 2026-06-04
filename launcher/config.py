@@ -91,12 +91,14 @@ class AppConfig:
     main: str
     path: str
     repository: Optional[str] = None
+    gitlab_project_id: Optional[str] = None
     api: Optional[str] = None
     releases_endpoint: Optional[str] = None
     archive_endpoint: Optional[str] = None
     version: Optional[str] = None
     auto_update: bool = True
-    configuration: str = "pyproject.toml"
+    configuration: Optional[str] = "pyproject.toml"
+    extras: list[str] = field(default_factory=list)
     install: Optional[str] = None
     reinstall_on_update: bool = False
     gui_timeout: int = 3
@@ -114,6 +116,10 @@ class AppConfig:
             raise ValueError(
                 "Either 'repository' or all of 'api', 'releases_endpoint', and 'archive_endpoint' must be provided"
             )
+        if not isinstance(self.extras, list) or not all(
+            isinstance(item, str) for item in self.extras
+        ):
+            raise ValueError("'extras' must be a list of strings")
 
     @property
     def env_name(self) -> str:
@@ -161,6 +167,8 @@ class AppConfig:
     @property
     def config_file_path(self) -> Optional[Path]:
         """Get the full path to the configuration file (pyproject.toml, etc.)."""
+        if self.configuration is None:
+            return None
         return self.sources_path / self.configuration
 
     @property
@@ -184,6 +192,8 @@ class AppConfig:
         # Add optional fields if set
         if self.repository:
             data["repository"] = self.repository
+        if self.gitlab_project_id:
+            data["gitlab_project_id"] = self.gitlab_project_id
         if self.api:
             data["api"] = self.api
         if self.releases_endpoint:
@@ -195,6 +205,8 @@ class AppConfig:
 
         data["auto_update"] = self.auto_update
         data["configuration"] = self.configuration
+        if self.extras:
+            data["extras"] = self.extras
 
         if self.install:
             data["install"] = self.install
@@ -283,12 +295,14 @@ def load_config(config_path: Path) -> AppConfig:
         main=data["main"],
         path=data["path"],
         repository=data.get("repository"),
+        gitlab_project_id=data.get("gitlab_project_id"),
         api=data.get("api"),
         releases_endpoint=data.get("releases_endpoint"),
         archive_endpoint=data.get("archive_endpoint"),
         version=data.get("version"),
         auto_update=data.get("auto_update", True),
         configuration=data.get("configuration", "pyproject.toml"),
+        extras=data.get("extras", []),
         install=data.get("install"),
         reinstall_on_update=data.get("reinstall_on_update", False),
         gui_timeout=data.get("gui_timeout", 3),

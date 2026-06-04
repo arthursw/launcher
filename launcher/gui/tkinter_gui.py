@@ -280,6 +280,8 @@ class TkinterGUI(BaseGUI):
 
         try:
             self._root.update()
+            if not self._root:
+                return False
             return self._root.winfo_exists()
         except tk.TclError:
             return False

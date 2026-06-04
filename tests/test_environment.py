@@ -64,6 +64,7 @@ class TestLauncherEnvironmentManager:
         # Create a mock config
         config = MagicMock()
         config.env_name = "test_env"
+        config.extras = []
         config.config_file_path = tmp_path / "pyproject.toml"
         (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
 
@@ -72,26 +73,95 @@ class TestLauncherEnvironmentManager:
 
         assert result == mock_env
         mock_instance.create_from_config.assert_called_once()
+        assert mock_instance.create_from_config.call_args.kwargs["optional_dependencies"] is None
 
     @patch('launcher.environment.EnvironmentManager')
-    def test_get_or_create_environment_no_config(self, mock_env_manager_class):
-        """Test getting or creating environment without config file."""
+    def test_get_or_create_environment_from_config_with_extras(self, mock_env_manager_class, tmp_path):
+        """Python optional dependency groups are passed to Wetlands."""
+        mock_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_instance
+
+        mock_env = MagicMock()
+        mock_instance.create_from_config.return_value = mock_env
+
+        config = MagicMock()
+        config.env_name = "test_env"
+        config.extras = ["desktop", "server"]
+        config.config_file_path = tmp_path / "pyproject.toml"
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
+
+        manager = LauncherEnvironmentManager()
+        result = manager.get_or_create_environment(config)
+
+        assert result == mock_env
+        mock_instance.create_from_config.assert_called_once_with(
+            name="test_env",
+            config_path=tmp_path / "pyproject.toml",
+            optional_dependencies=["desktop", "server"],
+        )
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_get_or_create_environment_configuration_disabled(self, mock_env_manager_class):
+        """configuration: null creates an environment without dependency config."""
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
 
         mock_env = MagicMock()
         mock_instance.create.return_value = mock_env
 
-        # Create a mock config with no config file
         config = MagicMock()
         config.env_name = "test_env"
-        config.config_file_path = Path("/nonexistent/pyproject.toml")
+        config.configuration = None
+        config.extras = []
+        config.config_file_path = None
 
         manager = LauncherEnvironmentManager()
         result = manager.get_or_create_environment(config)
 
         assert result == mock_env
         mock_instance.create.assert_called_once_with(name="test_env")
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_get_or_create_environment_requires_configured_file(self, mock_env_manager_class):
+        """A configured dependency file must exist."""
+        mock_env_manager_class.return_value = MagicMock()
+
+        config = MagicMock()
+        config.env_name = "test_env"
+        config.configuration = "backend/pyproject.toml"
+        config.extras = []
+        config.config_file_path = Path("/nonexistent/backend/pyproject.toml")
+
+        manager = LauncherEnvironmentManager()
+
+        try:
+            manager.get_or_create_environment(config)
+        except Exception as exc:
+            assert "Dependency config file was not found" in str(exc)
+            assert "backend/pyproject.toml" in str(exc)
+            assert "configuration: null" in str(exc)
+        else:
+            raise AssertionError("Expected missing configured dependency file to fail")
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_get_or_create_environment_requires_config_for_extras(self, mock_env_manager_class):
+        """Extras cannot be installed if dependency config loading is disabled."""
+        mock_env_manager_class.return_value = MagicMock()
+
+        config = MagicMock()
+        config.env_name = "test_env"
+        config.configuration = None
+        config.extras = ["desktop"]
+        config.config_file_path = None
+
+        manager = LauncherEnvironmentManager()
+
+        try:
+            manager.get_or_create_environment(config)
+        except Exception as exc:
+            assert "Dependency extras require a dependency config file" in str(exc)
+        else:
+            raise AssertionError("Expected missing config with extras to fail")
 
     @patch('launcher.environment.EnvironmentManager')
     def test_set_proxies(self, mock_env_manager_class):
@@ -231,3 +301,22 @@ class TestDependencyHash:
 
         assert second != first
         assert compute_dependency_hash(config) != second
+
+    def test_hash_changes_when_extras_change(self, tmp_path):
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources.mkdir(parents=True)
+        config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="pyproject.toml",
+            extras=["desktop"],
+        )
+        (sources / "pyproject.toml").write_text("[project]\nname='a'\n")
+        first = compute_dependency_hash(config)
+
+        config.extras = ["desktop", "server"]
+
+        assert compute_dependency_hash(config) != first

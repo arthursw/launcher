@@ -113,7 +113,7 @@ def _github_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
     )
 
 
-def _gitlab_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
+def _gitlab_endpoints(host: str, owner: str, repo: str, project_id: str | None = None) -> RepositoryInfo:
     """Create GitLab API endpoints.
 
     GitLab API:
@@ -128,16 +128,16 @@ def _gitlab_endpoints(host: str, owner: str, repo: str) -> RepositoryInfo:
     else:
         api_base = f"https://{host}/api/v4"
 
-    # GitLab uses URL-encoded project path as ID
-    project_id = quote_plus(f"{owner}/{repo}")
+    # GitLab accepts either a numeric project id or a URL-encoded project path.
+    resolved_project_id = project_id or quote_plus(f"{owner}/{repo}")
 
     return RepositoryInfo(
         host=host,
         owner=owner,
         repo=repo,
         api_base=api_base,
-        releases_endpoint=f"/projects/{project_id}/releases",
-        archive_endpoint=f"/projects/{project_id}/repository/archive.zip?sha={{ref}}",
+        releases_endpoint=f"/projects/{resolved_project_id}/releases",
+        archive_endpoint=f"/projects/{resolved_project_id}/repository/archive.zip?sha={{ref}}",
     )
 
 
@@ -160,6 +160,13 @@ def get_api_endpoints(config: AppConfig) -> tuple[str, str, str]:
     # If repository URL is provided, parse it
     if config.repository:
         repo_info = parse_repository_url(config.repository)
+        if config.gitlab_project_id and "gitlab" in repo_info.host.lower():
+            repo_info = _gitlab_endpoints(
+                repo_info.host,
+                repo_info.owner,
+                repo_info.repo,
+                project_id=config.gitlab_project_id,
+            )
 
         # Allow explicit overrides
         api_base = config.api.rstrip("/") if config.api else repo_info.api_base

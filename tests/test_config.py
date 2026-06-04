@@ -111,6 +111,7 @@ class TestAppConfig:
         assert config.main == "main.py"
         assert config.auto_update is True
         assert config.configuration == "pyproject.toml"
+        assert config.extras == []
         assert config.reinstall_on_update is False  # Default value
 
     def test_minimal_config_with_endpoints(self):
@@ -167,6 +168,19 @@ class TestAppConfig:
         )
         assert config.main_script_path == Path("/tmp/apps/testapp-v1.0.0/src/main.py")
 
+    def test_config_file_path_is_none_when_configuration_disabled(self):
+        """configuration: null explicitly disables dependency config loading."""
+        config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path="/tmp/apps",
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration=None,
+        )
+
+        assert config.config_file_path is None
+
     def test_sources_path_sanitizes_version(self):
         """Release tags should not create nested paths."""
         config = AppConfig(
@@ -212,6 +226,24 @@ class TestLoadConfig:
         assert config.name == "TestApp"
         assert config.main == "main.py"
         assert config.repository == "git@github.com:owner/repo.git"
+        assert config.configuration == "pyproject.toml"
+
+    def test_load_config_allows_null_configuration(self, tmp_path):
+        """configuration: null is the explicit no-dependency-file setting."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+            "configuration": None,
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+
+        assert config.configuration is None
+        assert config.config_file_path is None
 
     def test_load_full_config(self, tmp_path):
         """Test loading a full config file."""
@@ -223,6 +255,7 @@ class TestLoadConfig:
             "auto_update": False,
             "version": "testapp-v1.0.0",
             "configuration": "requirements.txt",
+            "extras": ["desktop"],
             "install": "install.py",
             "reinstall_on_update": True,
             "gui_timeout": 5,
@@ -241,6 +274,7 @@ class TestLoadConfig:
         assert config.auto_update is False
         assert config.version == "testapp-v1.0.0"
         assert config.configuration == "requirements.txt"
+        assert config.extras == ["desktop"]
         assert config.install == "install.py"
         assert config.reinstall_on_update is True
         assert config.gui_timeout == 5
@@ -315,6 +349,21 @@ class TestLoadConfig:
         assert isinstance(config.trust, TrustConfig)
         assert config.trust.mode == "signed_manifest"
 
+    def test_load_config_rejects_non_list_extras(self, tmp_path):
+        """Dependency extras must be listed explicitly."""
+        config_data = {
+            "name": "TestApp",
+            "main": "main.py",
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+            "extras": "desktop",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with pytest.raises(ValueError, match="'extras' must be a list of strings"):
+            load_config(config_file)
+
     def test_config_save(self, tmp_path):
         """Test saving config back to file."""
         config_data = {
@@ -328,11 +377,13 @@ class TestLoadConfig:
 
         config = load_config(config_file)
         config.version = "testapp-v2.0.0"
+        config.extras = ["desktop"]
         config.save()
 
         # Reload and verify
         reloaded = load_config(config_file)
         assert reloaded.version == "testapp-v2.0.0"
+        assert reloaded.extras == ["desktop"]
 
     def test_config_save_roundtrip_ssl_cert_file(self, tmp_path):
         """Test save + load roundtrip preserves ssl_cert_file."""

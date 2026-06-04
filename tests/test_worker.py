@@ -12,7 +12,9 @@ from launcher.worker import (
     ResponseType,
     create_queues,
 )
+from launcher.config import ProxySettings
 from launcher.state import LauncherState
+from launcher.updater import HTTPStatusError, UpdaterError
 
 
 @pytest.fixture
@@ -247,6 +249,117 @@ class TestLauncherWorker:
 
         worker._runner.stop.assert_called_once()
         worker._env_manager.exit.assert_called_once()
+
+    def test_http_status_error_does_not_request_proxy(self, mock_config_file, queues):
+        """HTTP 404/401-style update errors should not trigger proxy fallback."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+        worker._config = MagicMock(proxy_servers=ProxySettings())
+        worker._request_proxy = MagicMock()
+
+        def fail_with_http_status(*args, **kwargs):
+            raise HTTPStatusError(404, "https://example.com/releases", "Project Not Found")
+
+        with pytest.raises(HTTPStatusError):
+            worker._try_with_proxy_fallback("Update check", fail_with_http_status)
+
+        worker._request_proxy.assert_not_called()
+
+    def test_init_timeout_message_explains_reinstall_limits(self, mock_config_file, queues):
+        """Readiness timeout prompt should explain what reinstall can fix."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+        worker._config = MagicMock(init_timeout=30)
+        response_queue.put(
+            GUIResponse(
+                type=ResponseType.INIT_TIMEOUT_RESPONSE,
+                request_id="ignored",
+                data={"action": "exit"},
+            )
+        )
+
+        worker._request_init_timeout_action()
+        event = event_queue.get_nowait()
+
+        assert event.type == EventType.INIT_TIMEOUT
+        assert "did not report that it finished initializing" in event.message
+        assert "Reinstalling recreates the local environment" in event.message
+        assert "will not fix a broken release" in event.message
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    def test_worker_reports_updater_errors_as_update_errors(
+        self,
+        mock_update_sources,
+        mock_env_manager_class,
+        mock_config_file,
+        queues,
+    ):
+        """Expected update failures should not be reported as unexpected crashes."""
+        event_queue, _response_queue = queues
+        mock_update_sources.side_effect = UpdaterError("No releases found")
+        mock_env_manager_class.return_value = MagicMock()
+
+        worker = LauncherWorker(mock_config_file, event_queue, _response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        errors = []
+        while not event_queue.empty():
+            event = event_queue.get_nowait()
+            if event.type == EventType.ERROR:
+                errors.append(event.message)
+
+        assert errors == ["Update error: No releases found"]
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_worker_logs_process_handoff_without_init_message(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        mock_config_file,
+        queues,
+    ):
+        """When no init_message is configured, Launcher should explain the handoff."""
+        event_queue, response_queue = queues
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        process = MagicMock()
+        process.pid = 12345
+        mock_runner = MagicMock()
+        mock_runner.start.return_value = process
+        mock_runner.run_install_script.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        logs = []
+        complete = False
+        while not event_queue.empty():
+            event = event_queue.get_nowait()
+            if event.type == EventType.LOG:
+                logs.append(event.message)
+            if event.type == EventType.COMPLETE:
+                complete = True
+
+        assert "Application process started with PID 12345" in logs
+        assert "No init_message configured; launcher will exit and leave the application running." in logs
+        assert complete is True
+        mock_runner.ensure_still_running.assert_called_once()
 
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')

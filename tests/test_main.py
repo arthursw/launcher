@@ -2,10 +2,12 @@
 
 from pathlib import Path
 import sys
+import queue
 
 import main as launcher_main
 from launcher import release_cli
 from launcher import main as package_main
+from launcher.worker import EventType, WorkerEvent
 
 
 def test_find_config_path_uses_explicit_path(tmp_path, monkeypatch):
@@ -167,6 +169,31 @@ def test_launcher_run_subcommand_uses_runtime_launcher(monkeypatch, tmp_path):
     assert ("worker", config.resolve()) in calls
 
 
+def test_delayed_gui_opens_for_early_error():
+    """Finder-launched apps should show errors that happen before gui_timeout."""
+    event_queue = queue.Queue()
+    calls = []
+
+    class FakeWorker:
+        def __init__(self):
+            self._running = True
+
+        def start(self):
+            event_queue.put(WorkerEvent(type=EventType.ERROR, message="No releases found"))
+            self._running = False
+
+        def is_running(self):
+            return self._running
+
+    class FakeGui:
+        def run(self):
+            calls.append("gui")
+
+    package_main.run_with_delayed_gui(FakeWorker(), FakeGui(), gui_timeout=30, event_queue=event_queue)
+
+    assert calls == ["gui"]
+
+
 def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     """`launcher init` should create app-owned launcher packaging files."""
     monkeypatch.chdir(tmp_path)
@@ -184,9 +211,11 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     )
 
     config = tmp_path / "packaging" / "launcher" / "application.yml"
+    source_icon = tmp_path / "packaging" / "launcher" / "launcher.svg"
     icon = tmp_path / "packaging" / "launcher" / "icon_128x128.png"
     assert result == 0
     assert config.is_file()
+    assert source_icon.is_file()
     assert icon.is_file()
     text = config.read_text()
     assert "name: MyApp" in text
@@ -198,6 +227,45 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     assert "# These default URLs match the manifest and signature produced by" in text
     assert "# launcher release sign and uploaded by launcher release upload." in text
     assert "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml" in text
+
+
+def test_launcher_init_uses_packaged_default_icon_assets(tmp_path, monkeypatch):
+    """Default init should copy the checked-in SVG source and PNG build icon."""
+    monkeypatch.chdir(tmp_path)
+
+    result = package_main.main(["init"])
+
+    source_icon = tmp_path / "packaging" / "launcher" / "launcher.svg"
+    png_icon = tmp_path / "packaging" / "launcher" / "icon_128x128.png"
+    assert result == 0
+    assert source_icon.read_bytes() == (package_main.DEFAULT_ASSETS_DIR / "launcher.svg").read_bytes()
+    assert png_icon.read_bytes() == (package_main.DEFAULT_ASSETS_DIR / "launcher.png").read_bytes()
+
+
+def test_launcher_init_copies_custom_png_icon(tmp_path, monkeypatch):
+    """`launcher init --icon` should copy supported custom icons."""
+    monkeypatch.chdir(tmp_path)
+    source_icon = tmp_path / "custom.png"
+    source_icon.write_bytes(b"png")
+
+    result = package_main.main(["init", "--icon", str(source_icon)])
+
+    icon = tmp_path / "packaging" / "launcher" / "icon_128x128.png"
+    assert result == 0
+    assert icon.read_bytes() == b"png"
+
+
+def test_launcher_init_rejects_unsupported_icon_format(tmp_path, monkeypatch, capsys):
+    """Unsupported icon formats should fail before writing packaging files."""
+    monkeypatch.chdir(tmp_path)
+    source_icon = tmp_path / "custom.svg"
+    source_icon.write_text("<svg />")
+
+    result = package_main.main(["init", "--icon", str(source_icon)])
+
+    assert result == 1
+    assert not (tmp_path / "packaging").exists()
+    assert "Unsupported icon format" in capsys.readouterr().err
 
 
 def test_launcher_init_infers_gitlab_release_asset_urls(tmp_path, monkeypatch):
@@ -230,17 +298,17 @@ def test_launcher_init_infers_self_hosted_gitlab_release_asset_urls(tmp_path, mo
             "--name",
             "MyApp",
             "--repository",
-            "https://gitlab.inria.fr/sairpico/bioimageflow-platform",
+            "https://gitlab.example.org/my-group/myapp",
         ]
     )
 
     text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
     assert result == 0
     assert (
-        "https://gitlab.inria.fr/sairpico/bioimageflow-platform/-/releases/{version}/downloads/"
+        "https://gitlab.example.org/my-group/myapp/-/releases/{version}/downloads/"
         "launcher-manifest.yml"
     ) in text
-    assert "https://github.com/my-org/bioimageflow-platform" not in text
+    assert "https://github.com/my-org/myapp" not in text
 
 
 def test_launcher_init_infers_nested_gitlab_release_asset_urls(tmp_path, monkeypatch):

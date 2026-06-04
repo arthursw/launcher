@@ -63,8 +63,19 @@ This creates:
 packaging/
 `-- launcher/
     |-- application.yml
+    |-- launcher.svg
     `-- icon_128x128.png
 ```
+
+The SVG is editable source artwork. The PNG is the default build icon.
+To package a custom app icon, pass a PyInstaller-compatible icon:
+
+```bash
+uv run launcher init --icon path/to/app.icns
+```
+
+On macOS, `.icns` is the native icon format and is preferred for polished
+releases, but `.png` can be used.
 
 Edit `packaging/launcher/application.yml`, then create the signing key:
 

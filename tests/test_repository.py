@@ -158,6 +158,22 @@ class TestGetApiEndpoints:
         # archive_endpoint from repository
         assert archive_endpoint == "/repos/owner/repo/zipball/{ref}"
 
+    def test_gitlab_project_id_override(self):
+        """GitLab configs can use a numeric project id instead of an encoded path."""
+        config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path=".",
+            repository="https://gitlab.example.org/my-group/myapp",
+            gitlab_project_id="123456",
+        )
+
+        api_base, releases_endpoint, archive_endpoint = get_api_endpoints(config)
+
+        assert api_base == "https://gitlab.example.org/api/v4"
+        assert releases_endpoint == "/projects/123456/releases"
+        assert archive_endpoint == "/projects/123456/repository/archive.zip?sha={ref}"
+
     def test_explicit_endpoints_only(self):
         """Test config with only explicit endpoints."""
         config = AppConfig(

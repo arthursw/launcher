@@ -6,6 +6,7 @@ import argparse
 import platform
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -14,6 +15,7 @@ import yaml
 
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_OUTPUT_DIR = Path("dist/launcher")
+DEFAULT_BUILD_DIR_NAME = "build"
 DEFAULT_SPEC_NAME = "launcher.spec"
 DEFAULT_ENTRY_NAME = "launcher_build_entry.py"
 
@@ -41,6 +43,7 @@ def create_build_plan(
     config_path: Path | None = None,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     spec_path: Path | None = None,
+    icon_path: Path | None = None,
 ) -> BuildPlan:
     """Resolve build inputs without invoking PyInstaller."""
     config_path = (config_path or DEFAULT_CONFIG_PATH).expanduser()
@@ -55,19 +58,20 @@ def create_build_plan(
     config_dir = config_path.parent
     datas = [(config_path.resolve().as_posix(), "packaging/launcher")]
 
-    icon_path = _find_icon(config_dir)
+    icon_path = _resolve_icon(icon_path) if icon_path else _find_icon(config_dir)
     if icon_path:
         icon_path = icon_path.resolve()
         datas.append((icon_path.as_posix(), "resources"))
 
     output_dir = output_dir.expanduser().resolve()
+    build_dir = output_dir / DEFAULT_BUILD_DIR_NAME
     custom_spec = spec_path is not None
-    spec_path = spec_path.expanduser().resolve() if spec_path else output_dir / DEFAULT_SPEC_NAME
+    spec_path = spec_path.expanduser().resolve() if spec_path else build_dir / DEFAULT_SPEC_NAME
     return BuildPlan(
         config_path=config_path.resolve(),
         output_dir=output_dir,
         spec_path=spec_path,
-        entry_path=output_dir / DEFAULT_ENTRY_NAME,
+        entry_path=build_dir / DEFAULT_ENTRY_NAME,
         app_name=app_name,
         datas=datas,
         icon_path=icon_path,
@@ -169,10 +173,12 @@ def run_pyinstaller(plan: BuildPlan) -> None:
 
     command = [
         executable,
+        "--clean",
+        "--noconfirm",
         "--distpath",
         plan.output_dir.as_posix(),
         "--workpath",
-        (plan.output_dir / "build").as_posix(),
+        (plan.output_dir / DEFAULT_BUILD_DIR_NAME / "pyinstaller").as_posix(),
         plan.spec_path.as_posix(),
     ]
     subprocess.run(command, check=True)
@@ -187,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="Launcher app config")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT_DIR, help="Launcher build output directory")
     parser.add_argument("--spec", type=Path, default=None, help="Use an explicit PyInstaller spec")
+    parser.add_argument("--icon", type=Path, default=None, help="Icon for generated PyInstaller spec")
     parser.add_argument("--spec-only", action="store_true", help="Write generated build files without running PyInstaller")
     return parser
 
@@ -196,7 +203,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        plan = create_build_plan(config_path=args.config, output_dir=args.out, spec_path=args.spec)
+        if args.icon and args.spec:
+            raise BuildCliError("--icon cannot be used with --spec because icon paths are encoded in the spec")
+        plan = create_build_plan(config_path=args.config, output_dir=args.out, spec_path=args.spec, icon_path=args.icon)
         write_generated_files(plan)
         if not args.spec_only:
             run_pyinstaller(plan)
@@ -204,20 +213,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Launcher build output: {plan.output_dir}")
         return 0
     except (BuildCliError, subprocess.CalledProcessError) as e:
-        parser.exit(1, f"Error: {e}\n")
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     return 1
 
 
 def _find_icon(config_dir: Path) -> Path | None:
     if platform.system() == "Darwin":
-        mac_icon = config_dir / "app.icns"
-        if mac_icon.is_file():
-            return mac_icon
-    for name in ("icon_128x128.png", "app.icns"):
+        names = ("app.icns", "icon_128x128.png")
+    elif platform.system() == "Windows":
+        names = ("app.ico", "icon_128x128.png", "app.icns")
+    else:
+        names = ("icon_128x128.png", "app.icns", "app.ico")
+
+    for name in names:
         path = config_dir / name
         if path.is_file():
             return path
     return None
+
+
+def _resolve_icon(icon_path: Path) -> Path:
+    icon_path = icon_path.expanduser()
+    if not icon_path.is_file():
+        raise BuildCliError(f"Icon file not found: {icon_path}")
+    return icon_path
 
 
 def _executable_name(app_name: str) -> str:

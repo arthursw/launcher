@@ -8,6 +8,8 @@ path: "."
 
 # Use repository inference for GitHub/GitLab, or provide explicit endpoints.
 repository: git@github.com:owner/exampleapp.git
+# For self-hosted GitLab, set this if the public API cannot resolve the path.
+# gitlab_project_id: "123456"
 # api: https://api.github.com
 # releases_endpoint: /repos/owner/exampleapp/releases/latest
 # archive_endpoint: /repos/owner/exampleapp/zipball/{ref}
@@ -25,12 +27,19 @@ trust:
   manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
 
+# The dependency config must exist in the downloaded sources. Use
+# configuration: null only when the app intentionally has no dependency file.
 configuration: pyproject.toml
+# Optional dependency groups from the dependency config, for example the group
+# installed during development with: uv sync --extra desktop
+# extras:
+#   - desktop
 # install: install.py
 reinstall_on_update: false
 
 gui_timeout: 3
-init_message: "Initialized"
+# Optional readiness check. If set, the app must print this text once ready.
+# init_message: "Initialized"
 init_timeout: 30
 
 # Optional proxy defaults. Do not put proxy passwords here.

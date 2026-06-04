@@ -102,12 +102,29 @@ class LauncherEnvironmentManager:
         """
         env_name = config.env_name
         config_file_path = config.config_file_path
+        extras = getattr(config, "extras", []) or []
 
         if config_file_path and config_file_path.exists():
             logger.info(f"Creating environment '{env_name}' from config: {config_file_path}")
             return self._manager.create_from_config(
                 name=env_name,
                 config_path=config_file_path,
+                optional_dependencies=extras or None,
+            )
+        if extras:
+            raise EnvironmentError(
+                "Dependency extras require a dependency config file, but "
+                f"{config.configuration!r} was not found at {config_file_path}. "
+                "Update `configuration` so it points to the dependency file inside "
+                "the downloaded app sources, or remove `extras`."
+            )
+        if config_file_path:
+            raise EnvironmentError(
+                "Dependency config file was not found: "
+                f"{config_file_path}. Update `configuration` so it points to "
+                "the dependency file inside the downloaded app sources. If this "
+                "app intentionally has no dependency config file, set "
+                "`configuration: null`."
             )
         else:
             logger.info(f"Creating environment '{env_name}' with no dependencies")
@@ -189,6 +206,11 @@ def compute_dependency_hash(config: "AppConfig") -> str:
     digest = hashlib.sha256()
     sources_path = config.sources_path
     paths: list[Path] = []
+
+    digest.update(b"extras\0")
+    for extra in sorted(set(config.extras)):
+        digest.update(extra.encode("utf-8"))
+        digest.update(b"\0")
 
     config_path = config.config_file_path
     if config_path and config_path.exists():

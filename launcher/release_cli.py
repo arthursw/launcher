@@ -21,12 +21,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from .archive_validation import ArchiveValidationError, validate_source_archive
+
 DEFAULT_DIST_DIR = Path("dist")
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_PRIVATE_KEY = Path("launcher-signing-key.pem")
 DEFAULT_MANIFEST_NAME = "launcher-manifest.yml"
 DEFAULT_SIGNATURE_NAME = "launcher-manifest.yml.sig"
-ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz")
+ARCHIVE_SUFFIXES = (".zip",)
 
 
 class ReleaseCliError(Exception):
@@ -84,7 +86,12 @@ def sign_release(
     archive = infer_archive(archive, out_dir, version)
     version = version or infer_version_from_archive(archive)
     if not version:
-        raise ReleaseCliError("Version is required. Pass --version or use an archive name containing a version.")
+        raise ReleaseCliError(
+            f"Could not infer release version from archive name: {archive}. "
+            "Pass --version, or rename the archive so its filename contains the release version "
+            "(for example: myapp-v1.2.3.zip)."
+        )
+    validate_release_archive(archive)
 
     private_key = load_private_key(private_key_path)
     archive_sha256 = sha256_file(archive)
@@ -117,6 +124,11 @@ def verify_release(
     """Verify a release manifest, detached signature, and archive hash."""
     manifest_path = manifest_path or out_dir / DEFAULT_MANIFEST_NAME
     signature_path = signature_path or out_dir / DEFAULT_SIGNATURE_NAME
+    if not manifest_path.is_file():
+        raise ReleaseCliError(_missing_release_asset_message("manifest", manifest_path))
+    if not signature_path.is_file():
+        raise ReleaseCliError(_missing_release_asset_message("signature", signature_path))
+
     release_config = load_release_config(config_path)
     public_key = public_key or release_config.public_key
     if not public_key:
@@ -134,7 +146,33 @@ def verify_release(
         raise ReleaseCliError(
             f"Archive SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
         )
+    validate_release_archive(archive)
     return manifest
+
+
+def _missing_release_asset_message(kind: str, path: Path) -> str:
+    display_kind = "manifest" if kind == "manifest" else "signature"
+    return (
+        f"Release {display_kind} not found: {path}\n"
+        "Create and publish Launcher release metadata with:\n"
+        "  launcher release sign\n"
+        "  launcher release verify\n"
+        "  launcher release upload\n"
+        "If your archive or output directory is not the default `dist/`, pass "
+        "`--archive` and `--out` to the release commands."
+    )
+
+
+def validate_release_archive(archive: Path) -> None:
+    """Validate that the release archive can be safely extracted at runtime."""
+    try:
+        validate_source_archive(archive)
+    except ArchiveValidationError as e:
+        raise ReleaseCliError(
+            f"Archive is not safe for Launcher extraction: {e}\n"
+            "Remove unsafe symlinks or special files from the release archive. "
+            "Absolute symlinks are rejected because they can point outside the downloaded app sources."
+        ) from e
 
 
 def upload_release(

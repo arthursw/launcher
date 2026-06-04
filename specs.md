@@ -48,8 +48,10 @@ The launched application remains running after successful initialization. The
 launcher only terminates the child process on startup failure or cancellation.
 
 Archive extraction rejects path traversal, absolute paths, Windows drive paths,
-symlinks, and special files. It extracts to a unique temporary directory and
-moves completed sources into place without overwriting an existing target.
+unsafe symlinks, and special files. Relative symlinks are allowed only when
+their targets resolve inside the extracted source tree and do not create cycles
+or path collisions. Extraction uses a unique temporary directory and moves
+completed sources into place without overwriting an existing target.
 
 Runtime environments are recreated when dependency inputs change. The dependency
 hash includes the configured dependency file, common lock files, and the optional
@@ -75,12 +77,14 @@ main: main.py                                                            # The m
 path: "."                                                                # The directory in which to extract the sources; relative paths are resolved inside the launcher's per-app runtime data directory.
 version: v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
-configuration: pyproject.toml                                            # The configuration file to look for the dependencies. Can be a pyproject.toml, pixi.toml, environment.yml or requirements.txt file.
+configuration: pyproject.toml                                            # The dependency config file in the downloaded sources. Can be null only when no dependency config exists.
+extras:                                                                  # Optional dependency groups from the dependency config, such as uv --extra groups.
+  - desktop
 install: install.py                                                      # The install script with additional install commands
 reinstall_on_update: false                                               # Whether to re-run the install script when new sources are downloaded (even if the environment already exists)
 gui_timeout: 3                                                           # The time (in seconds) before opening the GUI which displays what's happening
-init_message: "Initialized"                                              # The message confirming the app is initialized (so the app is installed properly)
-init_timeout: 30                                                         # The time (in seconds) before throwing an "Install error" when waiting the init message
+init_message: "Initialized"                                              # Optional message confirming the app is initialized
+init_timeout: 30                                                         # The time (in seconds) before prompting the user when waiting for init_message
 proxy_servers:                                                           # The proxy settings to use if behind a proxy (undefined by default, and set by the user if necessary)
   http: http://username:password@corp.com:8080
   https: https://username:password@corp.com:8080
@@ -141,12 +145,14 @@ This launcher will:
   - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
   - if the environment does not exists: 
     - create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a `pixi.toml`, `environment.yml` or `requirements.txt` file.)
+    - install optional dependency groups listed in `extras` when supported by the dependency config
     - run the python install script defined by the `install` attribute if any
   - if the environment already exists but new sources were just downloaded and `reinstall_on_update` is true:
     - run the python install script defined by the `install` attribute
 - run the main script defined by the `main` attribute (located in `path`/`appname-tagname`)
-- read the stdout and wait for the `init_message`: it will confirm the app is properly installed
-- if the `init_message` is not in the stdout for `init_timeout` seconds: ask the user to either delete the environment (to trigger a new installation when restarting the app) and exit, or just exit, or wait more.
+- if `init_message` is configured, read stdout and wait for it; this confirms the app finished initializing
+- if the `init_message` is not in stdout for `init_timeout` seconds: explain that reinstalling can fix a corrupted local environment but not a broken release, then ask the user to reinstall, exit, or wait more.
+- if `init_message` is not configured, verify that the app does not exit immediately, then let it keep running.
 
 ## Python environment management
 

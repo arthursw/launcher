@@ -5,17 +5,22 @@ import hashlib
 import io
 import logging
 import shutil
-import stat
 import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from pathlib import PurePosixPath, PureWindowsPath
 from typing import Callable, Optional
 
 import requests
 import yaml
 
+from .archive_validation import (
+    ArchiveValidationError,
+    build_zip_member_plan,
+    single_archive_root,
+    validate_zip_members,
+    validate_zip_symlinks,
+)
 from .config import AppConfig, ProxySettings
 from .repository import get_api_endpoints
 from .state import LauncherState
@@ -36,6 +41,15 @@ class NetworkError(UpdaterError):
     """Network-related errors (connection, proxy, etc.)."""
 
     pass
+
+
+class HTTPStatusError(UpdaterError):
+    """HTTP status errors returned by the repository or release assets."""
+
+    def __init__(self, status_code: int | str, url: str, detail: str) -> None:
+        self.status_code = status_code
+        self.url = url
+        super().__init__(f"HTTP {status_code} for {url}: {detail}")
 
 
 class DownloadError(UpdaterError):
@@ -88,8 +102,7 @@ def fetch_latest_release(
     except requests.exceptions.Timeout as e:
         raise NetworkError(f"Request timed out: {url}") from e
     except requests.exceptions.HTTPError as e:
-        status_code = e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'
-        raise NetworkError(f"HTTP error {status_code}: {e}") from e
+        raise _http_status_error(e, url) from e
 
     data = response.json()
 
@@ -102,6 +115,11 @@ def fetch_latest_release(
     if isinstance(data, list) and len(data) > 0:
         if isinstance(data[0], dict) and "tag_name" in data[0]:
             return data[0]["tag_name"]
+    if isinstance(data, list) and len(data) == 0:
+        raise UpdaterError(
+            "No releases found. Create a GitHub/GitLab Release with the signed "
+            "launcher manifest and signature assets; tags alone are not enough."
+        )
 
     raise UpdaterError(f"Unexpected release response format: {type(data)}")
 
@@ -170,7 +188,21 @@ def _download_bytes(
     except requests.exceptions.Timeout as e:
         raise NetworkError(f"Request timed out: {url}") from e
     except requests.exceptions.HTTPError as e:
-        raise NetworkError(f"HTTP error downloading {url}: {e}") from e
+        raise _http_status_error(e, url) from e
+
+
+def _http_status_error(error: requests.exceptions.HTTPError, url: str) -> HTTPStatusError:
+    response = error.response if getattr(error, "response", None) is not None else None
+    status_code: int | str = response.status_code if response is not None else "unknown"
+    detail = str(error)
+    if status_code == 404:
+        detail = (
+            f"{detail}. Check that the repository path or GitLab project id is correct, "
+            "the project is visible to unauthenticated users, and the release exists."
+        )
+    elif status_code in {401, 403}:
+        detail = f"{detail}. The project or release asset requires authentication."
+    return HTTPStatusError(status_code, url, detail)
 
 
 def _verify_ed25519_signature(public_key_b64: str, signature: bytes, payload: bytes) -> None:
@@ -270,7 +302,7 @@ def download_and_extract_sources(
     except requests.exceptions.Timeout as e:
         raise NetworkError("Download timed out") from e
     except requests.exceptions.HTTPError as e:
-        raise NetworkError(f"HTTP error downloading sources: {e}") from e
+        raise _http_status_error(e, url) from e
 
     if expected_sha256:
         actual_sha256 = hashlib.sha256(archive_bytes).hexdigest()
@@ -291,8 +323,8 @@ def download_and_extract_sources(
 
         with zipfile.ZipFile(buffer, "r") as zf:
             infos = zf.infolist()
-            _validate_zip_members(infos)
-            root_folder = _single_archive_root(infos)
+            validate_zip_members(infos)
+            root_folder = single_archive_root(infos)
             _extract_zip_members(zf, infos, temp_path, root_folder)
 
         temp_path.replace(target_path)
@@ -302,45 +334,13 @@ def download_and_extract_sources(
 
     except zipfile.BadZipFile as e:
         raise DownloadError(f"Invalid zip archive: {e}") from e
+    except ArchiveValidationError as e:
+        raise DownloadError(str(e)) from e
     except OSError as e:
         raise DownloadError(f"Failed to extract sources: {e}") from e
     finally:
         if temp_path.exists():
             shutil.rmtree(temp_path, ignore_errors=True)
-
-
-def _validate_zip_members(infos: list[zipfile.ZipInfo]) -> None:
-    """Reject archive members that could write outside the extraction tree."""
-    for info in infos:
-        name = info.filename
-        if not name:
-            raise DownloadError("Archive contains an empty path")
-        if "\\" in name:
-            raise DownloadError(f"Archive contains unsafe path: {name}")
-
-        path = PurePosixPath(name)
-        windows_path = PureWindowsPath(name)
-        if path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
-            raise DownloadError(f"Archive contains absolute path: {name}")
-        if any(part == ".." for part in path.parts):
-            raise DownloadError(f"Archive contains parent path segment: {name}")
-
-        file_type = (info.external_attr >> 16) & 0o170000
-        if file_type:
-            if stat.S_ISLNK(file_type):
-                raise DownloadError(f"Archive contains symlink: {name}")
-            if not (stat.S_ISDIR(file_type) or stat.S_ISREG(file_type)):
-                raise DownloadError(f"Archive contains special file: {name}")
-
-
-def _single_archive_root(infos: list[zipfile.ZipInfo]) -> Optional[str]:
-    roots = {
-        PurePosixPath(info.filename).parts[0]
-        for info in infos
-        if PurePosixPath(info.filename).parts
-    }
-    return next(iter(roots)) if len(roots) == 1 else None
-
 
 def _extract_zip_members(
     zf: zipfile.ZipFile,
@@ -348,21 +348,29 @@ def _extract_zip_members(
     destination: Path,
     root_folder: Optional[str],
 ) -> None:
-    for info in infos:
-        parts = list(PurePosixPath(info.filename).parts)
-        if root_folder and parts and parts[0] == root_folder:
-            parts = parts[1:]
-        if not parts:
+    plan = build_zip_member_plan(zf, infos, root_folder)
+    validate_zip_symlinks(plan)
+
+    for member in plan:
+        if member.kind == "symlink":
             continue
 
-        target = destination.joinpath(*parts)
-        if info.is_dir():
+        target = destination.joinpath(*member.parts)
+        if member.kind == "dir":
             target.mkdir(parents=True, exist_ok=True)
             continue
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        with zf.open(info, "r") as src, open(target, "wb") as dst:
+        with zf.open(member.info, "r") as src, open(target, "wb") as dst:
             shutil.copyfileobj(src, dst)
+
+    for member in plan:
+        if member.kind != "symlink":
+            continue
+
+        target = destination.joinpath(*member.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(member.symlink_target)
 
 
 def update_sources(

@@ -42,3 +42,7 @@ line-length = 130
 
 [tool.hatch.build.targets.wheel]
 packages = ["launcher"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"assets/launcher.svg" = "assets/launcher.svg"
+"assets/launcher.png" = "assets/launcher.png"

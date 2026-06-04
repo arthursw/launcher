@@ -19,6 +19,7 @@ from launcher.updater import (
     check_sources_exist,
     download_and_extract_sources,
     update_sources,
+    HTTPStatusError,
     NetworkError,
     DownloadError,
     UpdaterError,
@@ -142,12 +143,36 @@ class TestFetchLatestRelease:
         assert result == "v2.0.0"
 
     @patch('launcher.updater.requests.get')
+    def test_fetch_gitlab_empty_releases(self, mock_get):
+        """An empty GitLab release list should explain that no releases exist."""
+        from launcher.config import AppConfig
+        mock_config = AppConfig(
+            name="TestApp",
+            main="main.py",
+            path="/tmp/test_apps",
+            repository="git@gitlab.com:owner/repo.git"
+        )
+        mock_response = Mock()
+        mock_response.json.return_value = []
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(UpdaterError, match="No releases found"):
+            fetch_latest_release(mock_config)
+
+    @patch('launcher.updater.requests.get')
     def test_fetch_no_release(self, mock_get, mock_config):
         """Test error when no release found (GitHub returns 404)."""
         import requests
-        mock_get.side_effect = requests.exceptions.HTTPError("404 Not Found")
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "404 Not Found",
+            response=mock_response,
+        )
+        mock_get.return_value = mock_response
 
-        with pytest.raises(NetworkError, match="HTTP error"):
+        with pytest.raises(HTTPStatusError, match="repository path or GitLab project id"):
             fetch_latest_release(mock_config)
 
     @patch('launcher.updater.requests.get')
@@ -328,14 +353,89 @@ class TestDownloadAndExtractSources:
         assert not (tmp_path / "testapp-v1.0.0").exists()
 
     @patch('launcher.updater.requests.get')
-    def test_reject_zip_symlink(self, mock_get, tmp_path, mock_config):
-        """Symlink members are rejected."""
+    def test_extract_zip_internal_symlink(self, mock_get, tmp_path, mock_config):
+        """Internal symlink members should be preserved when they stay in the app tree."""
+        mock_config.path = str(tmp_path)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("root/target.txt", "target")
+            info = zipfile.ZipInfo("root/link")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, "target.txt")
+        archive = zip_buffer.getvalue()
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        result = download_and_extract_sources(mock_config, "v1.0.0")
+
+        link = result / "link"
+        assert link.is_symlink()
+        assert link.readlink().as_posix() == "target.txt"
+        assert link.read_text() == "target"
+
+    @patch('launcher.updater.requests.get')
+    def test_extract_zip_internal_symlink_from_subdirectory(self, mock_get, tmp_path, mock_config):
+        """Relative symlink targets may point elsewhere inside the app tree."""
+        mock_config.path = str(tmp_path)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("root/target.txt", "target")
+            info = zipfile.ZipInfo("root/pkg/link")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, "../target.txt")
+        archive = zip_buffer.getvalue()
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        result = download_and_extract_sources(mock_config, "v1.0.0")
+
+        link = result / "pkg" / "link"
+        assert link.is_symlink()
+        assert link.readlink().as_posix() == "../target.txt"
+        assert link.read_text() == "target"
+
+    @pytest.mark.parametrize("target", ["../outside", "/tmp/outside", "C:/tmp/outside", "dir\\outside"])
+    @patch('launcher.updater.requests.get')
+    def test_reject_unsafe_zip_symlink_target(self, mock_get, tmp_path, mock_config, target):
+        """Symlink targets must not escape the extracted app tree."""
         mock_config.path = str(tmp_path)
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             info = zipfile.ZipInfo("root/link")
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
-            zf.writestr(info, "target")
+            zf.writestr(info, target)
+        archive = zip_buffer.getvalue()
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(DownloadError, match="unsafe symlink"):
+            download_and_extract_sources(mock_config, "v1.0.0")
+
+        assert not (tmp_path / "testapp-v1.0.0").exists()
+
+    @pytest.mark.parametrize("target", ["missing.txt", "b"])
+    @patch('launcher.updater.requests.get')
+    def test_reject_unresolvable_zip_symlink_target(self, mock_get, tmp_path, mock_config, target):
+        """Symlink targets must resolve to a real non-cyclic archive member."""
+        mock_config.path = str(tmp_path)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            info = zipfile.ZipInfo("root/a")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, target)
+            if target == "b":
+                other = zipfile.ZipInfo("root/b")
+                other.external_attr = (stat.S_IFLNK | 0o777) << 16
+                zf.writestr(other, "a")
         archive = zip_buffer.getvalue()
         mock_response = Mock()
         mock_response.headers = {"content-length": str(len(archive))}
@@ -345,6 +445,31 @@ class TestDownloadAndExtractSources:
 
         with pytest.raises(DownloadError, match="symlink"):
             download_and_extract_sources(mock_config, "v1.0.0")
+
+        assert not (tmp_path / "testapp-v1.0.0").exists()
+
+    @patch('launcher.updater.requests.get')
+    def test_reject_zip_symlink_with_child_entries(self, mock_get, tmp_path, mock_config):
+        """A symlink path must not also be used as a directory prefix."""
+        mock_config.path = str(tmp_path)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("root/target", "target")
+            info = zipfile.ZipInfo("root/pkg")
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(info, "target")
+            zf.writestr("root/pkg/main.py", "print('bad')")
+        archive = zip_buffer.getvalue()
+        mock_response = Mock()
+        mock_response.headers = {"content-length": str(len(archive))}
+        mock_response.iter_content = lambda chunk_size: [archive]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        with pytest.raises(DownloadError, match="symlink"):
+            download_and_extract_sources(mock_config, "v1.0.0")
+
+        assert not (tmp_path / "testapp-v1.0.0").exists()
 
     @patch('launcher.updater.requests.get')
     def test_existing_target_is_not_overwritten(self, mock_get, tmp_path, mock_config):
