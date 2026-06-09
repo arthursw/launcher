@@ -28,10 +28,26 @@ trust:
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
   # These default URLs match the archive, manifest, and signature produced by
-  # launcher release sign and uploaded by launcher release upload.
+  # launcher release archive, sign, and upload.
   manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
   archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
+
+# No release.archive config is needed when tracked files are enough.
+# For generated assets, uncomment and adjust structured build/include config:
+# release:
+#   archive:
+#     build:
+#       - command: ["npm", "ci"]
+#         cwd: frontend
+#       - command: ["npm", "run", "build"]
+#         cwd: frontend
+#     include:
+#       - frontend/dist
+#       - source: frontend/dist
+#         destination: my_app/static
+# Rare full override fallback:
+#     custom_script: packaging/launcher/custom_archive.py
 ```
 
 ## Main Fields
@@ -167,7 +183,7 @@ trust:
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
   # These default URLs match the archive, manifest, and signature produced by
-  # launcher release sign and uploaded by launcher release upload.
+  # launcher release archive, sign, and upload.
   manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
   archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
@@ -183,6 +199,44 @@ At runtime, Launcher downloads `archive.url` from the verified manifest and chec
 If you change `repository` after running `launcher init`, update these URLs too, or rerun `launcher init --force` with the real repository.
 Edit them manually for custom hosting, custom asset paths, or renamed files.
 `{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the archive filename in `dist/`.
+
+## Release Archive Fields
+
+`release.archive` is optional packaging-only config read by `launcher release archive VERSION`.
+When it is omitted, Launcher creates `dist/<repo>-<version>.zip` from tracked files at the requested git ref.
+The requested ref must resolve to `HEAD`, and tracked files must be clean before and after packaging.
+
+Use `build` for generated assets that are not tracked by git:
+
+```yaml
+release:
+  archive:
+    build:
+      - command: ["npm", "ci"]
+        cwd: frontend
+      - command: ["npm", "run", "build"]
+        cwd: frontend
+    include:
+      - frontend/dist
+      - source: frontend/dist
+        destination: my_app/static
+```
+
+Each `command` is an argv list run with `shell=False`.
+`cwd` is optional and relative to the repository root.
+String `include` entries preserve the source path in the archive.
+Object `include` entries copy `source` to `destination`, where `destination` is relative to the archive root.
+
+For rare cases where structured config is not enough, set `custom_script` to a Python script path:
+
+```yaml
+release:
+  archive:
+    custom_script: packaging/launcher/custom_archive.py
+```
+
+The script is called as `python <script> <version> <archive_path>` and must create the requested zip archive.
+`custom_script` cannot be combined with `build` or `include`.
 
 ## Optional Fields
 

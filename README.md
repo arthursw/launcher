@@ -26,7 +26,7 @@ you keep releasing:
 2. initialize `packaging/launcher/`;
 3. build and sign the launcher executable;
 4. publish releases of your app source code;
-5. run `launcher release sign` for each app release;
+5. run `launcher release archive`, `sign`, `verify`, and `upload` for each app release;
 6. users open the launcher;
 7. the launcher updates and starts the app.
 
@@ -109,7 +109,7 @@ tooling change.
 For each app release, build the app-owned release archive into `dist/` and run:
 
 ```bash
-./packaging/launcher/build-release-archive.sh v1.2.3
+uv run launcher release archive v1.2.3
 uv run launcher release sign
 uv run launcher release verify
 uv run launcher release upload

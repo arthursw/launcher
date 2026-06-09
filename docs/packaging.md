@@ -60,7 +60,7 @@ trust:
   # Replace this with the public key printed by `launcher release keygen`
   public_key: "<base64-ed25519-public-key>"
   # These default URLs match the archive, manifest, and signature produced by
-  # `launcher release sign` and uploaded by `launcher release upload`.
+  # `launcher release archive`, `sign`, and `upload`.
   manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
   archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
@@ -159,7 +159,7 @@ with the printed public key. The private key stays outside git and is used later
 by `launcher release sign`.
 
 The generated `manifest_url`, `signature_url`, and `archive_url` point to the release assets that the launcher downloads at runtime.
-The defaults match the files produced by `launcher release sign` and uploaded by `launcher release upload`.
+The defaults match the files produced by `launcher release archive`, `launcher release sign`, and `launcher release upload`.
 If you change `repository` after running `init`, update those URLs too, or rerun `init --force` with the real repository.
 Edit them only for custom hosting, custom asset paths, or renamed release assets.
 `{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the local archive filename written into the signed manifest.
@@ -246,27 +246,69 @@ and GitLab's [Releases page guide](https://docs.gitlab.com/user/project/releases
 For GitLab, tags alone are not enough: the packaged launcher asks the GitLab
 Releases API for the latest release.
 
-### 5.2. Create Or Update The Archive Script
+### 5.2. Configure Archive Packaging
 
-Keep archive construction in the app repository, for example in `packaging/launcher/build-release-archive.sh`.
-The script should take a version and write one `.zip` archive to `dist/`, such as `dist/myapp-v1.2.3.zip`.
-Simple apps can make this script zip tracked sources.
-Apps with generated assets should build those assets first and include the generated output in the zip.
-Do not commit generated `frontend/dist/` only for Launcher; build it inside the archive script or CI release job.
+For simple apps, no archive packaging config is needed.
+`launcher release archive VERSION` creates a `.zip` from tracked files at the requested git ref.
+That is enough when the files users need at runtime are already committed to git, such as Python modules, templates, package data, and dependency files.
+
+Some apps need release files that are produced by a build step and are not committed to git.
+Common examples are a web UI compiled by Vite, Webpack, or another JavaScript tool, generated documentation, generated schemas, or any static assets written into a build output directory.
+In that case, configure `release.archive` in `packaging/launcher/application.yml` so Launcher knows how to produce those files and where to place them in the final archive.
+
+Use `build` for commands that must run before the archive is created.
+Use `include` for files or directories that those commands produce and that must be appended to the archive.
+The example below assumes a repository with a JavaScript frontend in `frontend/`, where `npm run build` writes compiled browser files to `frontend/dist/`.
+If your app uses a different tool or output directory, replace the commands and paths with your own.
+
+```yaml
+release:
+  archive:
+    build:
+      - command: ["npm", "ci"]
+        cwd: frontend
+      - command: ["npm", "run", "build"]
+        cwd: frontend
+    include:
+      - frontend/dist
+      - source: frontend/dist
+        destination: my_app/static
+```
+
+`build` commands are argv lists run with `shell=False`.
+`cwd` is optional and relative to the repository root.
+String `include` entries preserve the source path in the archive.
+Object `include` entries copy `source` to `destination`, where `destination` is relative to the archive root.
+Use the string form when the generated files should keep the same path they have in your repository.
+Use the object form when the generated files need to land somewhere else in the downloaded app sources.
+
+For rare cases where structured build and include rules are not enough, use a Python custom script:
+
+```yaml
+release:
+  archive:
+    custom_script: packaging/launcher/custom_archive.py
+```
+
+The custom script is called as `python <script> <version> <archive_path>` and must create the requested zip.
+It cannot be combined with `build` or `include`.
 
 ### 5.3. Build The App Archive
 
 ```bash
-./packaging/launcher/build-release-archive.sh v1.2.3
+uv run launcher release archive v1.2.3
 ```
 
 Launcher hashes this exact local archive when it creates the signed manifest.
+Before writing the archive, Launcher verifies that `v1.2.3` resolves to `HEAD` and that tracked files are clean.
+Untracked generated files are allowed so build output can be included without committing it.
 
 ### 5.4. Sign And Verify
 
 Create and verify the signed Launcher metadata:
 
 ```bash
+uv run launcher release archive v1.2.3
 uv run launcher release sign
 uv run launcher release verify
 ```
@@ -322,6 +364,9 @@ pass the same archive to all three Launcher commands and pass the version to
 `sign`:
 
 ```bash
+uv run launcher release archive v1.2.3 \
+  --config packaging/launcher/application.yml \
+  --archive dist/myapp-v1.2.3.zip
 uv run launcher release sign \
   --config packaging/launcher/application.yml \
   --archive dist/myapp-v1.2.3.zip \

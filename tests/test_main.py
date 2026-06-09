@@ -249,10 +249,12 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     )
 
     config = tmp_path / "packaging" / "launcher" / "application.yml"
+    archive_script = tmp_path / "packaging" / "launcher" / "build-release-archive.py"
     source_icon = tmp_path / "packaging" / "launcher" / "launcher.svg"
     icon = tmp_path / "packaging" / "launcher" / "icon_128x128.png"
     assert result == 0
     assert config.is_file()
+    assert not archive_script.exists()
     assert source_icon.is_file()
     assert icon.is_file()
     text = config.read_text()
@@ -265,9 +267,19 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     assert "# Replace this with the public key printed by: launcher release keygen" in text
     assert "public_key: \"<base64-ed25519-public-key>\"" in text
     assert "# These default URLs match the archive, manifest, and signature produced by" in text
-    assert "# launcher release sign and uploaded by launcher release upload." in text
+    assert "# launcher release archive, sign, and upload." in text
     assert "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml" in text
     assert "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}" in text
+    assert "# No release.archive config is needed when tracked files are enough." in text
+    assert "# release:" in text
+    assert "#   archive:" in text
+    assert "#     build:" in text
+    assert "#       - command: [\"npm\", \"ci\"]" in text
+    assert "#         cwd: frontend" in text
+    assert "#     include:" in text
+    assert "#       - source: frontend/dist" in text
+    assert "#         destination: my_app/static" in text
+    assert "#     custom_script: packaging/launcher/custom_archive.py" in text
 
 
 def test_launcher_init_creates_module_entrypoint(tmp_path, monkeypatch):

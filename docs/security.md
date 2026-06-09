@@ -87,11 +87,15 @@ For each app release:
 5. upload the app archive, manifest, and signature as release assets.
 
 ```bash
-./packaging/launcher/build-release-archive.sh v1.2.3
+uv run launcher release archive v1.2.3
 uv run launcher release sign
 uv run launcher release verify
 uv run launcher release upload
 ```
+
+By default, `archive` creates `dist/<repo>-<version>.zip` from tracked files at the requested git ref.
+If the app needs generated assets, configure `release.archive.build` and `release.archive.include` in `packaging/launcher/application.yml`.
+Before and after packaging, Launcher checks that the requested ref resolves to `HEAD` and that tracked files are clean.
 
 By default, `sign`:
 

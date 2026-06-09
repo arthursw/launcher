@@ -1,14 +1,45 @@
 """Tests for the launcher release CLI."""
 
 import io
+import os
 from pathlib import Path
 import stat
+import subprocess
 import zipfile
 
 import yaml
 import pytest
 
 from launcher import release_cli
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout.strip()
+
+
+def _init_release_repo(tmp_path: Path, *, app_name: str = "MyApp") -> Path:
+    repo = tmp_path / "myapp"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "dev@example.com")
+    _git(repo, "config", "user.name", "Dev")
+    (repo / "main.py").write_text("print('hello')\n")
+    app_dir = repo / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text(
+        f"name: {app_name}\nrepository: https://github.com/my-org/myapp.git\n"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "initial")
+    _git(repo, "tag", "v1.2.3")
+    return repo
 
 
 def _release_zip_bytes(files: dict[str, str] | None = None, symlinks: dict[str, str] | None = None) -> bytes:
@@ -21,6 +52,455 @@ def _release_zip_bytes(files: dict[str, str] | None = None, symlinks: dict[str, 
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
             zf.writestr(info, target)
     return zip_buffer.getvalue()
+
+
+def test_archive_release_default_git_archive_writes_dist_zip(tmp_path, monkeypatch):
+    """archive should create the signed-release zip from tracked files by default."""
+    repo = _init_release_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    archive = release_cli.archive_release("v1.2.3")
+
+    assert archive == Path("dist/myapp-v1.2.3.zip")
+    assert archive.is_file()
+    with zipfile.ZipFile(archive) as zf:
+        names = set(zf.namelist())
+        assert "myapp-v1.2.3/main.py" in names
+        assert "myapp-v1.2.3/packaging/launcher/application.yml" in names
+    release_cli.validate_release_archive(archive)
+
+
+def test_cli_archive_default_config_is_optional(tmp_path, monkeypatch, capsys):
+    """archive should not require launcher config when tracked files are enough."""
+    repo = tmp_path / "plain-repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "dev@example.com")
+    _git(repo, "config", "user.name", "Dev")
+    (repo / "main.py").write_text("print('hello')\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "initial")
+    _git(repo, "tag", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    result = release_cli.main(["archive", "v1.2.3"])
+
+    assert result == 0
+    assert (repo / "dist" / "plain-repo-v1.2.3.zip").is_file()
+    assert "Archive written to: dist/plain-repo-v1.2.3.zip" in capsys.readouterr().out
+
+
+def test_archive_release_rejects_unknown_ref(tmp_path, monkeypatch):
+    """archive should fail clearly when the requested release ref does not exist."""
+    repo = _init_release_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Unknown git ref"):
+        release_cli.archive_release("v9.9.9")
+
+
+def test_archive_release_requires_version_to_match_head(tmp_path, monkeypatch):
+    """archive should only package the commit currently checked out."""
+    repo = _init_release_repo(tmp_path)
+    (repo / "main.py").write_text("print('new')\n")
+    _git(repo, "add", "main.py")
+    _git(repo, "commit", "-m", "new commit")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="does not match HEAD"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_rejects_dirty_tracked_files_before_build(tmp_path, monkeypatch):
+    """tracked changes should not be packaged accidentally."""
+    repo = _init_release_repo(tmp_path)
+    (repo / "main.py").write_text("print('dirty')\n")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="tracked files are dirty"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_rejects_dirty_tracked_files_after_build(tmp_path, monkeypatch):
+    """build commands may generate files but must not leave tracked files modified."""
+    repo = _init_release_repo(tmp_path)
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    build:",
+                "      - command:",
+                "          - python",
+                "          - -c",
+                "          - \"from pathlib import Path; Path('main.py').write_text('dirty\\\\n')\"",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="tracked files are dirty"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_runs_build_commands_with_cwd_and_includes_generated_folder(tmp_path, monkeypatch):
+    """structured build commands should run before generated includes are appended."""
+    repo = _init_release_repo(tmp_path)
+    frontend = repo / "frontend"
+    frontend.mkdir()
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    build:",
+                "      - command:",
+                "          - python",
+                "          - -c",
+                "          - \"from pathlib import Path; "
+                "Path('dist/app.js').parent.mkdir(exist_ok=True); Path('dist/app.js').write_text('built')\"",
+                "        cwd: frontend",
+                "    include:",
+                "      - frontend/dist",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    archive = release_cli.archive_release("v1.2.3")
+
+    with zipfile.ZipFile(archive) as zf:
+        assert zf.read("myapp-v1.2.3/frontend/dist/app.js") == b"built"
+
+
+def test_archive_release_includes_generated_folder_at_destination(tmp_path, monkeypatch):
+    """object includes should copy source files under the requested destination."""
+    repo = _init_release_repo(tmp_path)
+    generated = repo / "frontend" / "dist"
+    generated.mkdir(parents=True)
+    (generated / "app.js").write_text("built")
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    include:",
+                "      - source: frontend/dist",
+                "        destination: my_app/static",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    archive = release_cli.archive_release("v1.2.3")
+
+    with zipfile.ZipFile(archive) as zf:
+        assert zf.read("myapp-v1.2.3/my_app/static/app.js") == b"built"
+
+
+@pytest.mark.parametrize("destination", ["/abs", "../escape", "C:/escape", r"bad\\path"])
+def test_archive_release_rejects_unsafe_include_destinations(tmp_path, monkeypatch, destination):
+    """include destinations must stay inside the archive root."""
+    repo = _init_release_repo(tmp_path)
+    generated = repo / "frontend" / "dist"
+    generated.mkdir(parents=True)
+    (generated / "app.js").write_text("built")
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    include:",
+                "      - source: frontend/dist",
+                f"        destination: {destination!r}",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Unsafe include destination"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_rejects_duplicate_archive_members(tmp_path, monkeypatch):
+    """generated includes must not overwrite tracked files in the archive."""
+    repo = _init_release_repo(tmp_path)
+    generated = repo / "generated"
+    generated.mkdir()
+    (generated / "main.py").write_text("duplicate")
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    include:",
+                "      - source: generated/main.py",
+                "        destination: main.py",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Duplicate archive member"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_rejects_include_source_symlink_outside_repo(tmp_path, monkeypatch):
+    """generated include sources must not package files through escaping symlinks."""
+    repo = _init_release_repo(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    (repo / "generated").mkdir()
+    (repo / "generated" / "outside.txt").symlink_to(outside)
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    include:",
+                "      - generated/outside.txt",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Include source must stay inside the repository"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_custom_script_receives_version_and_archive_path(tmp_path, monkeypatch):
+    """custom_script should be a full Python override for archive creation."""
+    repo = _init_release_repo(tmp_path)
+    script = repo / "packaging" / "launcher" / "custom_archive.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "import sys",
+                "import zipfile",
+                "version = sys.argv[1]",
+                "archive = Path(sys.argv[2])",
+                "archive.parent.mkdir(parents=True, exist_ok=True)",
+                "with zipfile.ZipFile(archive, 'w') as zf:",
+                "    zf.writestr(f'myapp-{version}/main.py', 'custom')",
+            ]
+        )
+    )
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    custom_script: packaging/launcher/custom_archive.py",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "custom archive")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    archive = release_cli.archive_release("v1.2.3")
+
+    with zipfile.ZipFile(archive) as zf:
+        assert zf.read("myapp-v1.2.3/main.py") == b"custom"
+
+
+def test_archive_release_rejects_missing_custom_script(tmp_path, monkeypatch):
+    """custom_script should point to an existing Python file."""
+    repo = _init_release_repo(tmp_path)
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    custom_script: packaging/launcher/missing.py",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "missing custom archive")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Custom archive script not found"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_rejects_custom_script_with_structured_config(tmp_path, monkeypatch):
+    """custom_script should not be mixed with built-in build/include config."""
+    repo = _init_release_repo(tmp_path)
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    custom_script: packaging/launcher/custom_archive.py",
+                "    include:",
+                "      - frontend/dist",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "bad archive config")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="mutually exclusive"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_rejects_missing_custom_script_output(tmp_path, monkeypatch):
+    """custom scripts must create the requested archive."""
+    repo = _init_release_repo(tmp_path)
+    script = repo / "packaging" / "launcher" / "custom_archive.py"
+    script.write_text("import sys\n")
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    custom_script: packaging/launcher/custom_archive.py",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "bad custom archive")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="did not create archive"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_archive_release_validates_custom_script_output(tmp_path, monkeypatch):
+    """custom scripts should not bypass archive extraction safety checks."""
+    repo = _init_release_repo(tmp_path)
+    script = repo / "packaging" / "launcher" / "custom_archive.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "import sys",
+                "import zipfile",
+                "archive = Path(sys.argv[2])",
+                "archive.parent.mkdir(parents=True, exist_ok=True)",
+                "with zipfile.ZipFile(archive, 'w') as zf:",
+                "    zf.writestr('../escape.py', 'bad')",
+            ]
+        )
+    )
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "release:",
+                "  archive:",
+                "    custom_script: packaging/launcher/custom_archive.py",
+            ]
+        )
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "unsafe custom archive")
+    _git(repo, "tag", "-f", "v1.2.3")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="not safe for Launcher extraction"):
+        release_cli.archive_release("v1.2.3")
+
+
+def test_cli_archive_prints_written_archive(tmp_path, monkeypatch, capsys):
+    """The release CLI should expose archive as the first release step."""
+    repo = _init_release_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    result = release_cli.main(["archive", "v1.2.3"])
+
+    assert result == 0
+    assert "Archive written to: dist/myapp-v1.2.3.zip" in capsys.readouterr().out
+
+
+def test_archive_sign_verify_upload_dry_run_with_defaults(tmp_path, monkeypatch):
+    """The default archive should flow through existing release commands unchanged."""
+    repo = _init_release_repo(tmp_path)
+    fake_bin = repo / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.chdir(repo)
+
+    archive = release_cli.archive_release("v1.2.3")
+    public_key = release_cli.keygen()
+    release_cli.sign_release()
+    manifest = release_cli.verify_release(public_key=public_key)
+    commands = release_cli.upload_release(public_key=public_key, dry_run=True)
+
+    assert archive == Path("dist/myapp-v1.2.3.zip")
+    assert manifest["archive"]["name"] == "myapp-v1.2.3.zip"
+    assert commands == [
+        [
+            str(gh),
+            "release",
+            "upload",
+            "v1.2.3",
+            "dist/myapp-v1.2.3.zip",
+            "dist/launcher-manifest.yml",
+            "dist/launcher-manifest.yml.sig",
+            "--clobber",
+        ]
+    ]
 
 
 def test_keygen_writes_key_and_gitignore_entry(tmp_path, monkeypatch):

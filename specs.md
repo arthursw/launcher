@@ -22,6 +22,9 @@ building, and release assets:
 - `launcher release keygen` creates an Ed25519 private key, adds the key path
   to `.gitignore`, and prints the public key for
   `packaging/launcher/application.yml`.
+- `launcher release archive VERSION` creates the `.zip` app archive consumed by
+  `sign`, `verify`, and `upload`, using `git archive` by default and optional
+  `release.archive` packaging config for generated assets.
 - `launcher release sign` creates `launcher-manifest.yml` and
   `launcher-manifest.yml.sig`, using `dist/` by default and inferring the
   version from the archive filename when possible.
@@ -102,6 +105,25 @@ trust:
   manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
   archive_url: "https://github.com/owner/exampleapp/releases/download/{version}/{archive_name}"
+release:
+  archive:
+    build:
+      - command: ["npm", "ci"]
+        cwd: frontend
+      - command: ["npm", "run", "build"]
+        cwd: frontend
+    include:
+      - frontend/dist
+      - source: frontend/dist
+        destination: example_app/static
+```
+
+For rare custom archive builders, `custom_script` is a mutually exclusive full override:
+
+```yaml
+release:
+  archive:
+    custom_script: packaging/launcher/custom_archive.py
 ```
 
 The `repository` attribute allows simplifying configuration by automatically inferring the release API endpoint. Instead of specifying `api` and `releases_endpoint` separately, you can provide a single `repository` attribute:

@@ -34,10 +34,26 @@ trust:
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
   # These default URLs match the archive, manifest, and signature produced by
-  # launcher release sign and uploaded by launcher release upload.
+  # launcher release archive, sign, and upload.
   manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
   archive_url: "https://github.com/owner/exampleapp/releases/download/{version}/{archive_name}"
+
+# No release.archive config is needed when tracked files are enough.
+# For generated assets, uncomment and adjust structured build/include config:
+# release:
+#   archive:
+#     build:
+#       - command: ["npm", "ci"]
+#         cwd: frontend
+#       - command: ["npm", "run", "build"]
+#         cwd: frontend
+#     include:
+#       - frontend/dist
+#       - source: frontend/dist
+#         destination: example_app/static
+# Rare full override fallback:
+#     custom_script: packaging/launcher/custom_archive.py
 
 # The dependency config must exist in the downloaded sources. Use
 # configuration: null only when the app intentionally has no dependency file.

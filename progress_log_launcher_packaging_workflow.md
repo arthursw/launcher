@@ -362,3 +362,24 @@
   - `git diff --check`
   - targeted stale source-archive/provider-archive wording search
 - Next: use an app repository archive script to create a real `dist/<app>-<version>.zip`, then run `launcher release sign`, `verify`, and `upload --dry-run` against the app release.
+
+## Iteration 22
+
+- Planned: reintroduce `launcher release archive VERSION` as the standard way to build the exact app archive consumed by signing, verification, and upload.
+- Implemented:
+  - Added `launcher release archive VERSION` with `--config`, `--out`, and `--archive`.
+  - Defaulted archive creation to a strict `git archive` of the requested ref with required ref-to-HEAD matching and clean tracked files before and after packaging.
+  - Added optional `release.archive.build` argv commands, `release.archive.include` generated file inclusion, duplicate archive member rejection, unsafe destination rejection, and final archive safety validation.
+  - Added a mutually exclusive Python `release.archive.custom_script` override.
+  - Stopped generating an archive script from `launcher init`; generated configs now contain commented structured archive examples instead.
+  - Updated README, packaging guide, configuration guide, security guide, example config, specs, and this progress log for the new release flow.
+- Learned:
+  - The archive command can safely allow untracked generated files while still rejecting dirty tracked files by using `git status --porcelain --untracked-files=no`.
+  - Include handling needs an explicit duplicate-member check before zip append because generated assets can otherwise overwrite tracked archive paths silently.
+- Verification:
+  - `uv run pytest tests/test_release_cli.py tests/test_main.py -q`
+  - `uv run pytest -q`
+  - `uv run ruff check .`
+  - `git diff --check`
+  - Review-agent findings addressed for optional default config, symlink include source escapes, and docs clarity.
+- Next: merge the verified release archive implementation back to the main worktree.
