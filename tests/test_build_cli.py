@@ -13,8 +13,9 @@ def write_config(root: Path) -> Path:
             [
                 "name: MyApp",
                 "repository: https://github.com/my-org/myapp.git",
-                "main: main.py",
-                'path: "."',
+                "entrypoint:",
+                "  mode: script",
+                "  script: main.py",
                 "auto_update: true",
                 "configuration: pyproject.toml",
             ]
@@ -39,6 +40,40 @@ def test_build_plan_uses_default_app_repo_config(tmp_path, monkeypatch):
     assert plan.entry_path == tmp_path / "dist" / "launcher" / "build" / "launcher_build_entry.py"
     assert (str(config), "packaging/launcher") in plan.datas
     assert (str(icon), "resources") in plan.datas
+    assert plan.app_name == "MyApp"
+
+
+def test_build_plan_validates_full_launcher_config(tmp_path):
+    """Build planning should fail before packaging invalid runtime config."""
+    config = tmp_path / "packaging" / "launcher" / "application.yml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                # missing entrypoint
+            ]
+        )
+    )
+
+    try:
+        build_cli.create_build_plan(config_path=config)
+    except build_cli.BuildCliError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("BuildCliError was not raised")
+
+    assert "Invalid config" in message
+    assert "Required field 'entrypoint'" in message
+
+
+def test_build_plan_allows_omitted_path(tmp_path):
+    """path is optional and defaults to portable per-app runtime data."""
+    config = write_config(tmp_path)
+
+    plan = build_cli.create_build_plan(config_path=config)
+
     assert plan.app_name == "MyApp"
 
 

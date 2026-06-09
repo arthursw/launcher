@@ -256,8 +256,6 @@
     a subdirectory.
 - Next: commit the verified launcher packaging workflow changes.
 
-## Iteration 17
-
 - Planned: make launched source-layout apps import their own packages without
   requiring extra config for common monorepo layouts.
 - Implemented:
@@ -275,3 +273,92 @@
     package directory on `sys.path`; the parent `src/` directory must be made
     importable separately.
 - Next: run full lint, tests, whitespace, and example-string verification.
+
+## Iteration 18
+
+- Planned: make `path` optional and catch invalid configs before packaged builds.
+- Implemented:
+  - Defaulted omitted or null `path` to `"."`.
+  - Removed `path` from the generated default config while preserving explicit
+    `launcher init --path` overrides.
+  - Added `launcher config check` for config validation without starting or
+    building.
+  - Made `launcher build` load the full config before writing build files or
+    running PyInstaller.
+  - Updated docs, examples, specs, and tests for optional `path` and config
+    preflight.
+- Learned:
+  - Build planning previously only read `name`, so missing runtime fields were
+    discovered only after packaging.
+- Next: run full lint, tests, whitespace, and forbidden-example verification.
+
+## Iteration 19
+
+- Planned: fix source-layout imports after Wetlands stripped `PYTHONPATH` from
+  the launched process environment.
+- Implemented:
+  - Replaced the `PYTHONPATH` environment-variable launch strategy with a
+    generated Python bootstrap.
+  - The bootstrap prepends inferred or configured import paths to `sys.path`,
+    sets `sys.argv[0]` to the real app script, and runs the configured script as
+    `__main__`.
+  - Kept the inferred working directory behavior through subprocess cwd.
+  - Updated tests and docs to describe Python import paths rather than the
+    `PYTHONPATH` environment variable.
+- Learned:
+  - Wetlands intentionally removes `PYTHONPATH`, `PYTHONHOME`, and
+    `PYTHONEXECUTABLE` from the process environment, so Launcher cannot rely on
+    those variables to make source-layout packages importable.
+- Next: rebuild the app launcher executable and retest the packaged app.
+
+## Iteration 20
+
+- Planned: replace the single script launch field with explicit script, module,
+  and project entrypoint modes.
+- Implemented:
+  - Added an `entrypoint` config object with `script`, `module`, and `project`
+    modes and no legacy config alias.
+  - Updated script and module modes to use generated bootstraps with explicit
+    `sys.path` and `sys.argv`.
+  - Added project mode package installation through `python -m pip install .`
+    plus a persisted project install fingerprint.
+  - Updated `launcher init`, config validation, docs, specs, examples, and
+    tests around the new entrypoint contract.
+- Learned:
+  - Project installation should be tracked separately from dependency
+    environment recreation, because a new app release can require reinstalling
+    the package without changing dependency inputs.
+  - A recreated or brand-new dependency environment must install the project
+    package even when the stored project install fingerprint already matches.
+  - CLI app arguments that start with `--` need the `--arg=--flag` form when
+    passed through `launcher init`.
+- Verification:
+  - `uv run pytest -q`
+  - `uv run ruff check .`
+  - `git diff --check`
+  - forbidden real-project-name search
+- Next: rebuild an app launcher using `entrypoint.mode: module` or
+  `entrypoint.mode: project` and verify the packaged app startup path.
+
+## Iteration 21
+
+- Planned: switch signed releases from provider-generated source archives to exact app archive assets named in the signed manifest.
+- Implemented:
+  - Added `trust.archive_url` to config parsing, generated configs, examples, and docs.
+  - Changed `launcher release sign` to write schema v2 manifests with `archive.name`, `archive.url`, and `archive.sha256`.
+  - Added `--archive-url`, archive URL template resolution, URL validation, and repository-derived GitHub/GitLab archive asset URLs.
+  - Made `launcher release verify` validate schema v2, archive name, hash, signature, and archive extraction safety.
+  - Made `launcher release upload` include the app archive alongside the manifest and signature.
+  - Made runtime signed-manifest updates download `manifest.archive.url`, validate the SHA-256 hash, and reject schema v1 manifests.
+  - Removed provider archive endpoint fallback from the archive downloader used by runtime update flows.
+  - Updated packaging, configuration, security, README, example config, and specs to recommend an app-owned archive build script and manual upload of all three assets.
+- Learned:
+  - Malformed signed manifest data needs type checks before field access so errors remain `UpdaterError` instead of raw Python exceptions.
+  - Invalid archive URLs can otherwise escape through `requests` as `MissingSchema`; both signing and runtime parsing now reject non-HTTP(S) archive URLs.
+  - Auto-update and fixed-version flows need separate tests because they enter the signed-manifest download path through different branches.
+- Verification:
+  - `uv run pytest -q`
+  - `uv run ruff check .`
+  - `git diff --check`
+  - targeted stale source-archive/provider-archive wording search
+- Next: use an app repository archive script to create a real `dist/<app>-<version>.zip`, then run `launcher release sign`, `verify`, and `upload --dry-run` against the app release.

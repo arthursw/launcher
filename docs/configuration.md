@@ -4,13 +4,20 @@ Each packaged launcher includes one YAML file describing the app it should run.
 In an app repository, the default location is
 `packaging/launcher/application.yml`.
 
+Validate it with:
+
+```bash
+uv run launcher config check
+```
+
 ## Minimal Example
 
 ```yaml
 name: MyApp
 repository: https://github.com/my-org/myapp.git
-main: main.py
-path: "."
+entrypoint:
+  mode: script
+  script: main.py
 auto_update: true
 configuration: pyproject.toml
 # extras:
@@ -20,10 +27,11 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the manifest and signature produced by
+  # These default URLs match the archive, manifest, and signature produced by
   # launcher release sign and uploaded by launcher release upload.
   manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
+  archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
 ```
 
 ## Main Fields
@@ -32,25 +40,68 @@ trust:
 - `repository`: GitHub or GitLab repository containing your app.
 - `gitlab_project_id`: optional numeric GitLab project id. Use this for GitLab
   instances where the project path cannot be resolved by the public API.
-- `main`: Python file to run inside the downloaded app sources.
-- `path`: where app sources are stored on the user's machine. Relative paths
-  are resolved inside the launcher's per-app runtime data directory, so the
-  generated `path: "."` is portable across platforms.
+- `entrypoint`: how Launcher starts your app. Choose one of `script`,
+  `module`, or `project`.
+- `path`: optional location for app sources on the user's machine. When omitted
+  or null, it defaults to `"."`. Relative paths are resolved inside the
+  launcher's per-app runtime data directory, so the default is portable across
+  platforms.
 - `auto_update`: when true, Launcher checks the latest release.
 - `configuration`: dependency file in your app sources, relative to the
-  downloaded repository root. The file must exist. Set `configuration: null`
+  downloaded app archive root. The file must exist. Set `configuration: null`
   only for apps that intentionally have no dependency config file.
 - `extras`: optional dependency groups to install from `configuration`.
 - `working_directory`: optional app launch directory, relative to the downloaded
   repository root.
 - `pythonpath`: optional list of import paths to prepend before starting the
-  app, relative to the downloaded repository root.
+  app, relative to the downloaded app archive root.
+
+## Entrypoint Modes
+
+Use `script` when you want Launcher to run a Python file from the downloaded app archive:
+
+```yaml
+entrypoint:
+  mode: script
+  script: main.py
+```
+
+Use `module` when development startup uses `python -m ...`:
+
+```yaml
+entrypoint:
+  mode: module
+  module: my_app
+  args:
+    - --desktop
+    - --port
+    - "8765"
+```
+
+Use `project` when the app must be installed first, for example because startup
+uses a console script, package metadata, entry points, plugins, or packaged data:
+
+```yaml
+entrypoint:
+  mode: project
+  command: my-app-gui
+  project_directory: backend
+```
+
+In project mode, Launcher installs the project package with
+`python -m pip install .` from `project_directory`, then runs `command`.
+The project is reinstalled when the app release or project install inputs
+change.
 
 If your app code lives below the repository root, use paths from the repository
 root:
 
 ```yaml
-main: backend/src/my_app/desktop.py
+entrypoint:
+  mode: module
+  module: my_app
+  args:
+    - --desktop
 configuration: backend/pyproject.toml
 extras:
   - desktop
@@ -62,9 +113,9 @@ you would pass to `uv sync --extra desktop`.
 
 By default, Launcher starts the app from the directory containing
 `configuration`. In the example above, the working directory is `backend/`.
-Launcher also prepends that directory to `PYTHONPATH`, and prepends
-`backend/src` when that folder exists. That makes common `src/` Python projects
-importable without extra config.
+Launcher also makes that directory importable, and makes `backend/src`
+importable when that folder exists. That makes common `src/` Python projects
+work without extra config.
 
 For unusual layouts, override those launch paths explicitly:
 
@@ -76,13 +127,14 @@ pythonpath:
 ```
 
 If your repository cannot be inferred automatically, you can use explicit API
-fields instead of `repository`:
+fields for release discovery instead of `repository`:
 
 ```yaml
 api: https://api.github.com
 releases_endpoint: /repos/my-org/myapp/releases/latest
-archive_endpoint: /repos/my-org/myapp/zipball/{ref}
 ```
+
+Archive downloads come from the signed manifest's `archive.url`, not from provider source archive endpoints.
 
 For GitLab, Launcher uses API v4. A project path such as
 `group/myapp` is sent to GitLab as `group%2Fmyapp`, which is the normal GitLab
@@ -114,28 +166,33 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the manifest and signature produced by
+  # These default URLs match the archive, manifest, and signature produced by
   # launcher release sign and uploaded by launcher release upload.
   manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
+  archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
 ```
 
 This is required because Launcher downloads Python code and runs it. See
 [security.md](security.md) for the explanation.
 
-`manifest_url` and `signature_url` are the runtime download URLs for
-`launcher-manifest.yml` and `launcher-manifest.yml.sig`. The defaults match the
-files produced by `launcher release sign` and uploaded by
-`launcher release upload`. If you change `repository` after running
-`launcher init`, update these URLs too, or rerun `launcher init --force` with
-the real repository. Edit them manually for custom hosting, custom asset paths,
-or renamed files. `{version}` is replaced with the release tag the launcher is
-trying to run.
+`manifest_url`, `signature_url`, and `archive_url` are the runtime release asset URL templates.
+`manifest_url` and `signature_url` fetch `launcher-manifest.yml` and `launcher-manifest.yml.sig`.
+`archive_url` is used by `launcher release sign` to write the exact app archive URL into the signed manifest.
+At runtime, Launcher downloads `archive.url` from the verified manifest and checks its SHA-256 hash before extraction.
+If you change `repository` after running `launcher init`, update these URLs too, or rerun `launcher init --force` with the real repository.
+Edit them manually for custom hosting, custom asset paths, or renamed files.
+`{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the archive filename in `dist/`.
 
 ## Optional Fields
 
 ```yaml
 version: v1.2.3
+entrypoint:
+  mode: module
+  module: my_app
+  args:
+    - --desktop
 working_directory: backend
 pythonpath:
   - backend/src
@@ -147,6 +204,8 @@ init_timeout: 30
 ```
 
 - `version`: fixed version to use when `auto_update` is false.
+- `entrypoint.args`: arguments passed to the configured script, module, or
+  project command.
 - `working_directory`: override the inferred app launch directory.
 - `pythonpath`: override inferred Python import paths.
 - `install`: optional Python install script in your app sources.

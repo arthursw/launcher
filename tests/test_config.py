@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 import yaml
 
-from launcher.config import AppConfig, ProxySettings, TrustConfig, load_config
+from launcher.config import AppConfig, EntryPointConfig, ProxySettings, TrustConfig, load_config
 
 
 class TestProxySettings:
@@ -103,44 +103,44 @@ class TestAppConfig:
         """Test minimal config with repository URL."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
-            path=".",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             repository="git@github.com:owner/repo.git"
         )
         assert config.name == "TestApp"
-        assert config.main == "main.py"
+        assert config.entrypoint.mode == "script"
+        assert config.entrypoint.script == "main.py"
+        assert config.path == "."
         assert config.auto_update is True
         assert config.configuration == "pyproject.toml"
         assert config.extras == []
         assert config.reinstall_on_update is False  # Default value
 
     def test_minimal_config_with_endpoints(self):
-        """Test minimal config with explicit endpoints."""
+        """Explicit release discovery endpoints should not require an archive endpoint."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             api="https://api.example.com",
             releases_endpoint="/releases",
-            archive_endpoint="/archive/{ref}"
         )
         assert config.api == "https://api.example.com"
         assert config.releases_endpoint == "/releases"
+        assert config.archive_endpoint is None
 
     def test_config_validation_fails_without_repository_or_endpoints(self):
         """Test that config validation fails without repository or endpoints."""
-        with pytest.raises(ValueError, match="Either 'repository' or all of"):
+        with pytest.raises(ValueError, match="Either 'repository' or both 'api' and 'releases_endpoint'"):
             AppConfig(
                 name="TestApp",
-                main="main.py",
-                path="."
+                entrypoint=EntryPointConfig(mode="script", script="main.py"),
             )
 
     def test_env_name_sanitization(self):
         """Test environment name sanitization."""
         config = AppConfig(
             name="My App! 123",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             repository="git@github.com:owner/repo.git"
         )
@@ -150,29 +150,29 @@ class TestAppConfig:
         """Test sources path generation."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
             version="v1.0.0"
         )
         assert config.sources_path == Path("/tmp/apps/testapp-v1.0.0")
 
-    def test_main_script_path(self):
-        """Test main script path generation."""
+    def test_script_path(self):
+        """Test script path generation."""
         config = AppConfig(
             name="TestApp",
-            main="src/main.py",
+            entrypoint=EntryPointConfig(mode="script", script="src/main.py"),
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
             version="v1.0.0"
         )
-        assert config.main_script_path == Path("/tmp/apps/testapp-v1.0.0/src/main.py")
+        assert config.script_path == Path("/tmp/apps/testapp-v1.0.0/src/main.py")
 
     def test_config_file_path_is_none_when_configuration_disabled(self):
         """configuration: null explicitly disables dependency config loading."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -185,7 +185,7 @@ class TestAppConfig:
         """Monorepo projects should launch from the dependency config directory."""
         config = AppConfig(
             name="TestApp",
-            main="backend/src/test_app/desktop.py",
+            entrypoint=EntryPointConfig(mode="script", script="backend/src/test_app/desktop.py"),
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -200,7 +200,7 @@ class TestAppConfig:
         (sources / "backend" / "src").mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
-            main="backend/src/test_app/desktop.py",
+            entrypoint=EntryPointConfig(mode="script", script="backend/src/test_app/desktop.py"),
             path=str(tmp_path / "apps"),
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -218,7 +218,7 @@ class TestAppConfig:
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
-            main="scripts/desktop.py",
+            entrypoint=EntryPointConfig(mode="script", script="scripts/desktop.py"),
             path=str(tmp_path / "apps"),
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -234,7 +234,7 @@ class TestAppConfig:
         """Release tags should not create nested paths."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path="/tmp/apps",
             repository="git@github.com:owner/repo.git",
             version="release/v1.0.0",
@@ -249,7 +249,7 @@ class TestAppConfig:
         monkeypatch.chdir(cwd)
         config = AppConfig(
             name="Test App",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -264,8 +264,7 @@ class TestLoadConfig:
         """Test loading a minimal config file."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
-            "path": ".",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "repository": "git@github.com:owner/repo.git"
         }
         config_file = tmp_path / "application.yml"
@@ -273,15 +272,32 @@ class TestLoadConfig:
 
         config = load_config(config_file)
         assert config.name == "TestApp"
-        assert config.main == "main.py"
+        assert config.entrypoint.mode == "script"
+        assert config.entrypoint.script == "main.py"
+        assert config.path == "."
         assert config.repository == "git@github.com:owner/repo.git"
         assert config.configuration == "pyproject.toml"
+
+    def test_load_config_allows_null_path(self, tmp_path):
+        """path: null uses the portable per-app runtime data default."""
+        config_data = {
+            "name": "TestApp",
+            "entrypoint": {"mode": "script", "script": "main.py"},
+            "path": None,
+            "repository": "git@github.com:owner/repo.git",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+
+        assert config.path == "."
 
     def test_load_config_allows_null_configuration(self, tmp_path):
         """configuration: null is the explicit no-dependency-file setting."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
             "configuration": None,
@@ -298,7 +314,12 @@ class TestLoadConfig:
         """Test loading a full config file."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {
+                "mode": "project",
+                "command": "test-app-gui",
+                "project_directory": "backend",
+                "args": ["--desktop"],
+            },
             "path": "/tmp/apps",
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
@@ -322,6 +343,10 @@ class TestLoadConfig:
 
         config = load_config(config_file)
         assert config.name == "TestApp"
+        assert config.entrypoint.mode == "project"
+        assert config.entrypoint.command == "test-app-gui"
+        assert config.entrypoint.project_directory == "backend"
+        assert config.entrypoint.args == ["--desktop"]
         assert config.auto_update is False
         assert config.version == "testapp-v1.0.0"
         assert config.configuration == "requirements.txt"
@@ -345,12 +370,12 @@ class TestLoadConfig:
         """Test that ValueError is raised for missing required fields."""
         config_data = {
             "name": "TestApp",
-            # missing "main" and "path"
+            # missing "entrypoint"
         }
         config_file = tmp_path / "application.yml"
         config_file.write_text(yaml.dump(config_data))
 
-        with pytest.raises(ValueError, match="Required field 'main'"):
+        with pytest.raises(ValueError, match="Required field 'entrypoint'"):
             load_config(config_file)
 
     def test_load_empty_config(self, tmp_path):
@@ -365,7 +390,7 @@ class TestLoadConfig:
         """Test loading config with ssl_cert_file in proxy_servers."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
             "proxy_servers": {
@@ -384,7 +409,7 @@ class TestLoadConfig:
         """Trust config is parsed and validated."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
             "trust": {
@@ -392,6 +417,7 @@ class TestLoadConfig:
                 "public_key": "abc",
                 "manifest_url": "https://example.com/{version}/launcher-manifest.yml",
                 "signature_url": "https://example.com/{version}/launcher-manifest.yml.sig",
+                "archive_url": "https://example.com/{version}/{archive_name}",
             },
         }
         config_file = tmp_path / "application.yml"
@@ -401,12 +427,13 @@ class TestLoadConfig:
 
         assert isinstance(config.trust, TrustConfig)
         assert config.trust.mode == "signed_manifest"
+        assert config.trust.archive_url == "https://example.com/{version}/{archive_name}"
 
     def test_load_config_rejects_non_list_extras(self, tmp_path):
         """Dependency extras must be listed explicitly."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
             "extras": "desktop",
@@ -421,7 +448,7 @@ class TestLoadConfig:
         """Python import path entries must be listed explicitly."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
             "pythonpath": "src",
@@ -432,11 +459,62 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="'pythonpath' must be a list of strings"):
             load_config(config_file)
 
+    def test_load_config_accepts_module_entrypoint(self, tmp_path):
+        """Module entrypoints run a package with python -m semantics."""
+        config_data = {
+            "name": "TestApp",
+            "entrypoint": {
+                "mode": "module",
+                "module": "test_app",
+                "args": ["--desktop", "--port", "8765"],
+            },
+            "repository": "git@github.com:owner/repo.git",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+
+        assert config.entrypoint.mode == "module"
+        assert config.entrypoint.module == "test_app"
+        assert config.entrypoint.args == ["--desktop", "--port", "8765"]
+
+    @pytest.mark.parametrize(
+        ("entrypoint", "message"),
+        [
+            ({"mode": "unknown", "script": "main.py"}, "entrypoint.mode"),
+            ({"mode": "script"}, "entrypoint.script is required"),
+            ({"mode": "module"}, "entrypoint.module is required"),
+            ({"mode": "project"}, "entrypoint.command is required"),
+            (
+                {"mode": "script", "script": "main.py", "module": "test_app"},
+                "script entrypoints can only define",
+            ),
+            (
+                {"mode": "module", "module": "test_app", "command": "test-app"},
+                "module entrypoints can only define",
+            ),
+            ({"mode": "script", "script": "main.py", "args": "--debug"}, "entrypoint.args"),
+        ],
+    )
+    def test_load_config_rejects_invalid_entrypoint(self, tmp_path, entrypoint, message):
+        """Entrypoint validation should fail before build or run."""
+        config_data = {
+            "name": "TestApp",
+            "entrypoint": entrypoint,
+            "repository": "git@github.com:owner/repo.git",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with pytest.raises(ValueError, match=message):
+            load_config(config_file)
+
     def test_config_save(self, tmp_path):
         """Test saving config back to file."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git"
         }
@@ -461,7 +539,7 @@ class TestLoadConfig:
         """Test save + load roundtrip preserves ssl_cert_file."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
         }
@@ -483,7 +561,7 @@ class TestLoadConfig:
         """Test save + load roundtrip preserves reinstall_on_update."""
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": ".",
             "repository": "git@github.com:owner/repo.git",
         }

@@ -1,4 +1,4 @@
-"""Validation for source archives before Launcher extraction."""
+"""Validation for app archives before Launcher extraction."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 class ArchiveValidationError(Exception):
-    """Raised when a source archive is not safe to extract."""
+    """Raised when an app archive is not safe to extract."""
 
 
 @dataclass(frozen=True)
@@ -21,9 +21,9 @@ class ZipMemberPlan:
 
 
 def validate_source_archive(archive_path: Path) -> None:
-    """Validate that a source archive can be safely extracted by Launcher."""
+    """Validate that an app archive can be safely extracted by Launcher."""
     if archive_path.suffix != ".zip":
-        raise ArchiveValidationError("Only .zip source archives are supported")
+        raise ArchiveValidationError("Only .zip app archives are supported")
 
     try:
         with zipfile.ZipFile(archive_path, "r") as zf:

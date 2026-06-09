@@ -154,8 +154,8 @@ def get_api_endpoints(config: AppConfig) -> tuple[str, str, str]:
         ValueError: If endpoints cannot be determined
     """
     # If all endpoints are explicitly provided, use them
-    if config.api and config.releases_endpoint and config.archive_endpoint:
-        return config.api.rstrip("/"), config.releases_endpoint, config.archive_endpoint
+    if config.api and config.releases_endpoint:
+        return config.api.rstrip("/"), config.releases_endpoint, config.archive_endpoint or ""
 
     # If repository URL is provided, parse it
     if config.repository:
@@ -175,4 +175,4 @@ def get_api_endpoints(config: AppConfig) -> tuple[str, str, str]:
 
         return api_base, releases_endpoint, archive_endpoint
 
-    raise ValueError("Cannot determine API endpoints: neither repository nor api/releases_endpoint/archive_endpoint provided")
+    raise ValueError("Cannot determine API endpoints: neither repository nor api/releases_endpoint provided")

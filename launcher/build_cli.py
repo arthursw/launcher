@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-import yaml
+from .config import load_config
 
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_OUTPUT_DIR = Path("dist/launcher")
@@ -50,10 +50,11 @@ def create_build_plan(
     if not config_path.is_file():
         raise BuildCliError(f"Config file not found: {config_path}")
 
-    data = yaml.safe_load(config_path.read_text()) or {}
-    app_name = data.get("name")
-    if not app_name:
-        raise BuildCliError(f"Config file must define name: {config_path}")
+    try:
+        config = load_config(config_path)
+    except (OSError, ValueError) as exc:
+        raise BuildCliError(f"Invalid config {config_path}: {exc}") from exc
+    app_name = config.name
 
     config_dir = config_path.parent
     datas = [(config_path.resolve().as_posix(), "packaging/launcher")]

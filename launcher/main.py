@@ -261,6 +261,39 @@ def run_launcher(argv: Sequence[str] | None = None, config_path: Optional[Path] 
     return 0
 
 
+def check_config(argv: Sequence[str] | None = None, config_path: Optional[Path] = None) -> int:
+    """Validate launcher configuration without starting the app."""
+    parser = argparse.ArgumentParser(
+        prog="launcher config check",
+        description="Validate the launcher app configuration.",
+    )
+    parser.add_argument(
+        "--config",
+        "-c",
+        type=Path,
+        default=None,
+        help=f"Path to app config (default: {DEFAULT_PACKAGING_CONFIG})",
+    )
+    args = parser.parse_args(argv)
+
+    resolved_path, config_candidates = find_config_path(config_path or args.config)
+    if not resolved_path.exists():
+        print(f"Error: Configuration file not found: {resolved_path}", file=sys.stderr)
+        if config_candidates:
+            checked = "\n  ".join(str(path) for path in config_candidates)
+            print(f"Checked:\n  {checked}", file=sys.stderr)
+        return 1
+
+    try:
+        load_config(resolved_path)
+    except Exception as e:
+        print(f"Error loading configuration: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Configuration OK: {resolved_path}")
+    return 0
+
+
 def init_launcher(argv: Sequence[str] | None = None) -> int:
     """Create app-owned launcher packaging files."""
     parser = argparse.ArgumentParser(
@@ -270,7 +303,17 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_PACKAGING_CONFIG)
     parser.add_argument("--name", default="MyApp", help="Application display name")
     parser.add_argument("--repository", default="https://github.com/my-org/myapp.git")
-    parser.add_argument("--main", default="main.py", help="Main Python file inside downloaded app sources")
+    parser.add_argument(
+        "--mode",
+        choices=["script", "module", "project"],
+        default="script",
+        help="App entrypoint mode",
+    )
+    parser.add_argument("--script", default="main.py", help="Python file for script mode")
+    parser.add_argument("--module", default="my_app", help="Python module for module mode")
+    parser.add_argument("--command", default="my-app", help="Installed command for project mode")
+    parser.add_argument("--project-directory", default=None, help="Project directory for project mode")
+    parser.add_argument("--arg", action="append", default=[], help="Argument passed to the app entrypoint")
     parser.add_argument("--path", default=".", help="Install path for downloaded app sources")
     parser.add_argument("--configuration", default="pyproject.toml", help="Dependency config inside app sources")
     parser.add_argument("--icon", type=Path, default=None, help="Custom launcher icon (.icns, .ico, or .png)")
@@ -292,40 +335,56 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
         return 1
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    install_path = args.path.format(name=args.name)
-    manifest_url, signature_url = _release_asset_urls(args.repository)
+    manifest_url, signature_url, archive_url = _release_asset_urls(args.repository)
+    config_lines = [
+        f"name: {args.name}",
+        f"repository: {args.repository}",
+        "entrypoint:",
+        f"  mode: {args.mode}",
+    ]
+    if args.mode == "script":
+        config_lines.append(f"  script: {args.script}")
+    elif args.mode == "module":
+        config_lines.append(f"  module: {args.module}")
+    else:
+        config_lines.append(f"  command: {args.command}")
+        if args.project_directory:
+            config_lines.append(f"  project_directory: {args.project_directory}")
+    if args.arg:
+        config_lines.append("  args:")
+        config_lines.extend(f"    - {arg}" for arg in args.arg)
+    if args.path != ".":
+        config_lines.append(f'path: "{args.path.format(name=args.name)}"')
+    config_lines.extend(
+        [
+            "auto_update: true",
+            "# The dependency config must exist in the downloaded sources. Use",
+            "# configuration: null only when the app intentionally has no dependency file.",
+            f"configuration: {args.configuration}",
+            "# If the app needs optional Python dependencies, list their groups:",
+            "# extras:",
+            "#   - desktop",
+            "# Launcher starts from the dependency config directory by default and",
+            "# makes that directory, plus its src/ folder when present, importable.",
+            "# Override only for unusual layouts:",
+            "# working_directory: backend",
+            "# pythonpath:",
+            "#   - backend/src",
+            "",
+            "trust:",
+            "  mode: signed_manifest",
+            "  # Replace this with the public key printed by: launcher release keygen",
+            '  public_key: "<base64-ed25519-public-key>"',
+            "  # These default URLs match the archive, manifest, and signature produced by",
+            "  # launcher release sign and uploaded by launcher release upload.",
+            f'  manifest_url: "{manifest_url}"',
+            f'  signature_url: "{signature_url}"',
+            f'  archive_url: "{archive_url}"',
+            "",
+        ]
+    )
     config_path.write_text(
-        "\n".join(
-            [
-                f"name: {args.name}",
-                f"repository: {args.repository}",
-                f"main: {args.main}",
-                f'path: "{install_path}"',
-                "auto_update: true",
-                "# The dependency config must exist in the downloaded sources. Use",
-                "# configuration: null only when the app intentionally has no dependency file.",
-                f"configuration: {args.configuration}",
-                "# If the app needs optional Python dependencies, list their groups:",
-                "# extras:",
-                "#   - desktop",
-                "# Launcher starts from the dependency config directory by default and",
-                "# adds that directory, plus its src/ folder when present, to PYTHONPATH.",
-                "# Override only for unusual layouts:",
-                "# working_directory: backend",
-                "# pythonpath:",
-                "#   - backend/src",
-                "",
-                "trust:",
-                "  mode: signed_manifest",
-                "  # Replace this with the public key printed by: launcher release keygen",
-                '  public_key: "<base64-ed25519-public-key>"',
-                "  # These default URLs match the manifest and signature produced by",
-                "  # launcher release sign and uploaded by launcher release upload.",
-                f'  manifest_url: "{manifest_url}"',
-                f'  signature_url: "{signature_url}"',
-                "",
-            ]
-        )
+        "\n".join(config_lines)
     )
     for source_icon, icon_path in icon_paths:
         if source_icon.resolve() != icon_path.resolve():
@@ -390,6 +449,8 @@ def main(argv: Sequence[str] | Path | None = None, config_path: Optional[Path] =
             from launcher import build_cli
 
             return build_cli.main(rest)
+        if command == "config" and rest[:1] == ["check"]:
+            return check_config(rest[1:], config_path=config_path)
 
     return run_launcher(args, config_path=config_path)
 
@@ -404,7 +465,7 @@ def _repo_name(repository: str) -> str:
     return cleaned.rsplit("/", 1)[-1] or "myapp"
 
 
-def _release_asset_urls(repository: str) -> tuple[str, str]:
+def _release_asset_urls(repository: str) -> tuple[str, str, str]:
     """Infer release asset URLs for generated config when possible."""
     try:
         repo = parse_repository_url(repository.rstrip("/").removesuffix(".git"))
@@ -420,6 +481,7 @@ def _release_asset_urls(repository: str) -> tuple[str, str]:
     return (
         f"{base}/launcher-manifest.yml",
         f"{base}/launcher-manifest.yml.sig",
+        f"{base}/{{archive_name}}",
     )
 
 

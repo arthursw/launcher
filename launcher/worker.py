@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Optional
 
 from .config import AppConfig, ProxySettings, load_config
-from .environment import LauncherEnvironmentManager, EnvironmentError, compute_dependency_hash
+from .environment import (
+    LauncherEnvironmentManager,
+    EnvironmentError,
+    compute_dependency_hash,
+    compute_project_install_fingerprint,
+)
 from .proxy import discover_proxy_settings
 from .runner import ScriptRunner, InitTimeoutError
 from .updater import HTTPStatusError, NetworkError, DownloadError, UpdaterError, update_sources
@@ -321,12 +326,29 @@ class LauncherWorker:
                 if not self._runner.run_install_script():
                     raise Exception("Install script failed")
 
+            project_install_fingerprint = None
+            if self._config.entrypoint.mode == "project":
+                project_install_fingerprint = compute_project_install_fingerprint(self._config, version)
+                should_install_project = (
+                    not self._state
+                    or not env_existed
+                    or self._state.project_install_fingerprint != project_install_fingerprint
+                )
+                if should_install_project:
+                    self._log("Installing project package...")
+                    if not self._runner.install_project():
+                        raise Exception("Project package install failed")
+                else:
+                    self._log("Project package install is up to date")
+
             if self._state:
                 self._state.version = version
                 self._state.dependency_hash = dependency_hash
+                if project_install_fingerprint:
+                    self._state.project_install_fingerprint = project_install_fingerprint
                 self._state.save()
 
-            # Start main script
+            # Start the configured entrypoint
             self._log("Starting application...")
             process = self._runner.start(
                 output_callback=lambda line: self._log(f"[app] {line}")

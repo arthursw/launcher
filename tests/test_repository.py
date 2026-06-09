@@ -7,7 +7,7 @@ from launcher.repository import (
     parse_repository_url,
     get_api_endpoints,
 )
-from launcher.config import AppConfig
+from launcher.config import AppConfig, EntryPointConfig
 
 
 class TestParseRepositoryUrl:
@@ -113,7 +113,7 @@ class TestGetApiEndpoints:
         """Test getting endpoints from repository URL."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             repository="git@github.com:owner/repo.git"
         )
@@ -127,7 +127,7 @@ class TestGetApiEndpoints:
         """Test that explicit endpoints override inferred ones."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             repository="git@github.com:owner/repo.git",
             api="https://custom.api.com",
@@ -144,7 +144,7 @@ class TestGetApiEndpoints:
         """Test partial endpoint override."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             repository="git@github.com:owner/repo.git",
             releases_endpoint="/custom/releases"
@@ -162,7 +162,7 @@ class TestGetApiEndpoints:
         """GitLab configs can use a numeric project id instead of an encoded path."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             repository="https://gitlab.example.org/my-group/myapp",
             gitlab_project_id="123456",
@@ -178,7 +178,7 @@ class TestGetApiEndpoints:
         """Test config with only explicit endpoints."""
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=".",
             api="https://api.example.com/",
             releases_endpoint="/releases",
@@ -191,12 +191,28 @@ class TestGetApiEndpoints:
         assert releases_endpoint == "/releases"
         assert archive_endpoint == "/archive/{ref}"
 
+    def test_explicit_release_discovery_without_archive_endpoint(self):
+        """Signed-manifest downloads do not require a provider archive endpoint."""
+        config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
+            path=".",
+            api="https://api.example.com/",
+            releases_endpoint="/releases",
+        )
+
+        api_base, releases_endpoint, archive_endpoint = get_api_endpoints(config)
+
+        assert api_base == "https://api.example.com"
+        assert releases_endpoint == "/releases"
+        assert archive_endpoint == ""
+
     def test_missing_endpoints_raises_error(self):
         """Test that missing endpoints raise ValueError."""
         # This should fail at AppConfig creation due to validation
         with pytest.raises(ValueError):
             AppConfig(
                 name="TestApp",
-                main="main.py",
+                entrypoint=EntryPointConfig(mode="script", script="main.py"),
                 path="."
             )

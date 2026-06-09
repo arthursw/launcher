@@ -10,6 +10,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import requests
 import yaml
@@ -65,6 +66,8 @@ class LauncherManifest:
     schema_version: int
     application: str
     version: str
+    archive_name: str
+    archive_url: str
     archive_sha256: str
 
 
@@ -117,8 +120,8 @@ def fetch_latest_release(
             return data[0]["tag_name"]
     if isinstance(data, list) and len(data) == 0:
         raise UpdaterError(
-            "No releases found. Create a GitHub/GitLab Release with the signed "
-            "launcher manifest and signature assets; tags alone are not enough."
+            "No releases found. Create a GitHub/GitLab Release with the app archive, "
+            "signed launcher manifest, and signature assets; tags alone are not enough."
         )
 
     raise UpdaterError(f"Unexpected release response format: {type(data)}")
@@ -136,8 +139,8 @@ def fetch_signed_manifest(
 
     manifest_url = config.trust.manifest_url.format(version=version)
     signature_url = config.trust.signature_url.format(version=version)
-    manifest_bytes = _download_bytes(manifest_url, proxy_settings, timeout)
-    signature_bytes = _download_bytes(signature_url, proxy_settings, timeout)
+    manifest_bytes = _download_bytes(manifest_url, proxy_settings, timeout, asset_kind="manifest")
+    signature_bytes = _download_bytes(signature_url, proxy_settings, timeout, asset_kind="signature")
     _verify_ed25519_signature(config.trust.public_key, signature_bytes, manifest_bytes)
     return parse_manifest(manifest_bytes, config.name, version)
 
@@ -149,14 +152,25 @@ def parse_manifest(manifest_bytes: bytes, app_name: str, version: str) -> Launch
     except yaml.YAMLError as e:
         raise UpdaterError(f"Invalid manifest YAML: {e}") from e
 
+    if not isinstance(data, dict):
+        raise UpdaterError("Manifest must be a mapping")
     archive = data.get("archive") or {}
+    if not isinstance(archive, dict):
+        raise UpdaterError("Manifest archive must be a mapping")
+    archive_name = archive.get("name")
+    archive_url = archive.get("url")
     sha256 = archive.get("sha256")
-    if data.get("schema_version") != 1:
-        raise UpdaterError("Manifest schema_version must be 1")
+    if data.get("schema_version") != 2:
+        raise UpdaterError("Manifest schema_version must be 2")
     if data.get("application") != app_name:
         raise UpdaterError("Manifest application does not match configuration")
     if data.get("version") != version:
         raise UpdaterError("Manifest version does not match requested version")
+    if not isinstance(archive_name, str) or not archive_name:
+        raise UpdaterError("Manifest archive.name is required")
+    if not isinstance(archive_url, str) or not archive_url:
+        raise UpdaterError("Manifest archive.url is required")
+    _validate_manifest_archive_url(archive_url)
     if not isinstance(sha256, str) or len(sha256) != 64:
         raise UpdaterError("Manifest archive.sha256 must be a SHA-256 hex digest")
     try:
@@ -165,7 +179,9 @@ def parse_manifest(manifest_bytes: bytes, app_name: str, version: str) -> Launch
         raise UpdaterError("Manifest archive.sha256 must be a SHA-256 hex digest") from e
 
     return LauncherManifest(
-        schema_version=1,
+        schema_version=2,
+        archive_name=archive_name,
+        archive_url=archive_url,
         application=app_name,
         version=version,
         archive_sha256=sha256.lower(),
@@ -176,6 +192,8 @@ def _download_bytes(
     url: str,
     proxy_settings: Optional[ProxySettings],
     timeout: int,
+    *,
+    asset_kind: str | None = None,
 ) -> bytes:
     proxies = proxy_settings.to_dict() if proxy_settings else None
     verify = proxy_settings.verify if proxy_settings else True
@@ -188,14 +206,38 @@ def _download_bytes(
     except requests.exceptions.Timeout as e:
         raise NetworkError(f"Request timed out: {url}") from e
     except requests.exceptions.HTTPError as e:
-        raise _http_status_error(e, url) from e
+        raise _http_status_error(e, url, asset_kind=asset_kind) from e
+    except requests.exceptions.RequestException as e:
+        raise NetworkError(f"Failed request to {url}: {e}") from e
 
 
-def _http_status_error(error: requests.exceptions.HTTPError, url: str) -> HTTPStatusError:
+def _validate_manifest_archive_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise UpdaterError("Manifest archive.url must be an absolute http(s) URL")
+
+
+def _http_status_error(
+    error: requests.exceptions.HTTPError,
+    url: str,
+    *,
+    asset_kind: str | None = None,
+) -> HTTPStatusError:
     response = error.response if getattr(error, "response", None) is not None else None
     status_code: int | str = response.status_code if response is not None else "unknown"
     detail = str(error)
-    if status_code == 404:
+    if status_code == 404 and asset_kind in {"manifest", "signature"}:
+        detail = (
+            f"{detail}. Release {asset_kind} asset is missing. Create and publish Launcher "
+            "release metadata with: launcher release sign; launcher release verify; "
+            "launcher release upload."
+        )
+    elif status_code == 404 and asset_kind == "archive":
+        detail = (
+            f"{detail}. Release archive asset is missing. Upload the app archive named "
+            "in the signed manifest, then rerun launcher release verify and launcher release upload."
+        )
+    elif status_code == 404:
         detail = (
             f"{detail}. Check that the repository path or GitLab project id is correct, "
             "the project is visible to unauthenticated users, and the release exists."
@@ -243,9 +285,10 @@ def download_and_extract_sources(
     proxy_settings: Optional[ProxySettings] = None,
     progress_callback: Optional[ProgressCallback] = None,
     expected_sha256: Optional[str] = None,
+    archive_url: str | None = None,
     timeout: int = 300,
 ) -> Path:
-    """Download and extract source archive for a given tag.
+    """Download and extract the app archive for a given tag.
 
     Args:
         config: Application configuration
@@ -261,11 +304,9 @@ def download_and_extract_sources(
         NetworkError: If unable to download
         DownloadError: If extraction fails
     """
-    api_base, _, archive_endpoint = get_api_endpoints(config)
-
-    # Replace {ref} placeholder in archive endpoint
-    endpoint = archive_endpoint.replace("{ref}", tag_name)
-    url = f"{api_base}{endpoint}"
+    if not archive_url:
+        raise DownloadError("Archive URL is required. Signed manifests must include archive.url.")
+    url = archive_url
 
     proxies = proxy_settings.to_dict() if proxy_settings else None
     verify = proxy_settings.verify if proxy_settings else True
@@ -298,11 +339,13 @@ def download_and_extract_sources(
         archive_bytes = buffer.getvalue()
 
     except requests.exceptions.ConnectionError as e:
-        raise NetworkError(f"Failed to download sources: {e}") from e
+        raise NetworkError(f"Failed to download archive: {e}") from e
     except requests.exceptions.Timeout as e:
         raise NetworkError("Download timed out") from e
     except requests.exceptions.HTTPError as e:
-        raise _http_status_error(e, url) from e
+        raise _http_status_error(e, url, asset_kind="archive") from e
+    except requests.exceptions.RequestException as e:
+        raise NetworkError(f"Failed to download archive: {e}") from e
 
     if expected_sha256:
         actual_sha256 = hashlib.sha256(archive_bytes).hexdigest()
@@ -427,6 +470,7 @@ def update_sources(
             proxy_settings,
             progress_callback,
             expected_sha256=manifest.archive_sha256,
+            archive_url=manifest.archive_url,
         )
 
         # Update runtime version only; packaged config remains immutable.
@@ -454,6 +498,7 @@ def update_sources(
                 proxy_settings,
                 progress_callback,
                 expected_sha256=manifest.archive_sha256,
+                archive_url=manifest.archive_url,
             )
             if state:
                 state.version = tag_name

@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from .archive_validation import ArchiveValidationError, validate_source_archive
+from .repository import parse_repository_url
 
 DEFAULT_DIST_DIR = Path("dist")
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
@@ -43,6 +44,7 @@ class ReleaseConfig:
     application: str | None = None
     public_key: str | None = None
     repository: str | None = None
+    archive_url: str | None = None
 
 
 def keygen(private_key_path: Path = DEFAULT_PRIVATE_KEY, force: bool = False) -> str:
@@ -69,6 +71,7 @@ def sign_release(
     application: str | None = None,
     version: str | None = None,
     archive: Path | None = None,
+    archive_url: str | None = None,
     private_key_path: Path = DEFAULT_PRIVATE_KEY,
     out_dir: Path = DEFAULT_DIST_DIR,
     config_path: Path | None = None,
@@ -95,11 +98,22 @@ def sign_release(
 
     private_key = load_private_key(private_key_path)
     archive_sha256 = sha256_file(archive)
+    resolved_archive_url = resolve_archive_url(
+        explicit_archive_url=archive_url,
+        config_archive_url=release_config.archive_url,
+        repository=release_config.repository,
+        version=version,
+        archive_name=archive.name,
+    )
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "application": application,
         "version": version,
-        "archive": {"sha256": archive_sha256},
+        "archive": {
+            "name": archive.name,
+            "url": resolved_archive_url,
+            "sha256": archive_sha256,
+        },
     }
     manifest_bytes = yaml.safe_dump(manifest, sort_keys=False).encode("utf-8")
     signature = private_key.sign(manifest_bytes)
@@ -139,8 +153,15 @@ def verify_release(
     verify_signature(public_key, signature, manifest_bytes)
 
     manifest = yaml.safe_load(manifest_bytes) or {}
+    validate_release_manifest(manifest)
     archive = infer_archive(archive, out_dir, manifest.get("version"))
-    expected_sha256 = ((manifest.get("archive") or {}).get("sha256") or "").lower()
+    manifest_archive = manifest["archive"]
+    if archive.name != manifest_archive["name"]:
+        raise ReleaseCliError(
+            f"Archive name mismatch: manifest names {manifest_archive['name']}, "
+            f"but local archive is {archive.name}"
+        )
+    expected_sha256 = manifest_archive["sha256"].lower()
     actual_sha256 = sha256_file(archive)
     if actual_sha256 != expected_sha256:
         raise ReleaseCliError(
@@ -209,6 +230,12 @@ def upload_release(
         raise ReleaseCliError("Cannot detect GitHub or GitLab repository. Pass --repository or configure repository.")
 
     version = manifest["version"]
+    archive = infer_archive(archive, out_dir, version)
+    if archive.name != manifest["archive"]["name"]:
+        raise ReleaseCliError(
+            f"Archive name mismatch: manifest names {manifest['archive']['name']}, "
+            f"but local archive is {archive.name}"
+        )
     if provider == "github":
         github_message = (
             "GitHub upload requires the GitHub CLI (`gh`). Install it from "
@@ -220,6 +247,7 @@ def upload_release(
             "release",
             "upload",
             version,
+            str(archive),
             str(manifest_path),
             str(signature_path),
             "--clobber",
@@ -235,6 +263,7 @@ def upload_release(
             "release",
             "upload",
             version,
+            str(archive),
             str(manifest_path),
             str(signature_path),
             "--use-package-registry",
@@ -263,6 +292,7 @@ def load_release_config(config_path: Path | None) -> ReleaseConfig:
         application=data.get("name"),
         public_key=public_key,
         repository=data.get("repository"),
+        archive_url=trust.get("archive_url"),
     )
 
 
@@ -317,6 +347,94 @@ def infer_version_from_archive(archive: Path) -> str | None:
 
     matches = re.findall(r"v?\d+(?:\.\d+)+(?:[A-Za-z0-9._-]*)?", name)
     return matches[-1].strip("._-") if matches else None
+
+
+def resolve_archive_url(
+    *,
+    explicit_archive_url: str | None,
+    config_archive_url: str | None,
+    repository: str | None,
+    version: str,
+    archive_name: str,
+) -> str:
+    """Resolve the release archive URL written into the signed manifest."""
+    if explicit_archive_url:
+        return _format_archive_url(explicit_archive_url, version, archive_name)
+    if config_archive_url:
+        return _format_archive_url(config_archive_url, version, archive_name)
+    if repository:
+        return _default_archive_url(repository, version, archive_name)
+    raise ReleaseCliError(
+        "Archive URL is required. Pass --archive-url, configure trust.archive_url, "
+        "or configure repository so Launcher can infer the release asset URL."
+    )
+
+
+def _format_archive_url(template: str, version: str, archive_name: str) -> str:
+    try:
+        url = template.format(version=version, archive_name=archive_name)
+    except KeyError as e:
+        raise ReleaseCliError(
+            f"Archive URL contains unsupported placeholder {{{e.args[0]}}}. "
+            "Supported placeholders are {version} and {archive_name}."
+        ) from e
+    except ValueError as e:
+        raise ReleaseCliError(f"Archive URL template is invalid: {e}") from e
+
+    if "{" in url or "}" in url:
+        raise ReleaseCliError(
+            "Archive URL still contains unresolved placeholders after formatting. "
+            "Supported placeholders are {version} and {archive_name}."
+        )
+    _validate_archive_url(url)
+    return url
+
+
+def _default_archive_url(repository: str, version: str, archive_name: str) -> str:
+    try:
+        repo = parse_repository_url(repository.rstrip("/").removesuffix(".git"))
+    except ValueError as e:
+        raise ReleaseCliError(
+            "Cannot infer archive URL from repository. Pass --archive-url or configure trust.archive_url."
+        ) from e
+
+    owner_repo = f"{repo.owner}/{repo.repo}"
+    if "gitlab" in repo.host.lower():
+        base = f"https://{repo.host}/{owner_repo}/-/releases/{version}/downloads"
+    else:
+        base = f"https://{repo.host}/{owner_repo}/releases/download/{version}"
+    return f"{base}/{archive_name}"
+
+
+def _validate_archive_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ReleaseCliError("Archive URL must be an absolute http(s) URL")
+
+
+def validate_release_manifest(manifest: dict) -> None:
+    """Validate the local release manifest schema before upload."""
+    if not isinstance(manifest, dict):
+        raise ReleaseCliError("Release manifest must be a mapping")
+    if manifest.get("schema_version") != 2:
+        raise ReleaseCliError("Release manifest schema_version must be 2")
+    if not isinstance(manifest.get("application"), str) or not manifest["application"]:
+        raise ReleaseCliError("Release manifest application is required")
+    if not isinstance(manifest.get("version"), str) or not manifest["version"]:
+        raise ReleaseCliError("Release manifest version is required")
+
+    archive = manifest.get("archive")
+    if not isinstance(archive, dict):
+        raise ReleaseCliError("Release manifest archive must be a mapping")
+    for field in ("name", "url", "sha256"):
+        if not isinstance(archive.get(field), str) or not archive[field]:
+            raise ReleaseCliError(f"Release manifest archive.{field} is required")
+    if len(archive["sha256"]) != 64:
+        raise ReleaseCliError("Release manifest archive.sha256 must be a SHA-256 hex digest")
+    try:
+        int(archive["sha256"], 16)
+    except ValueError as e:
+        raise ReleaseCliError("Release manifest archive.sha256 must be a SHA-256 hex digest") from e
 
 
 def load_private_key(private_key_path: Path) -> Ed25519PrivateKey:
@@ -389,8 +507,8 @@ def require_executable(name: str, message: str) -> str:
         return executable
     raise ReleaseCliError(
         f"{message}\n\n"
-        f"Manual upload: upload {DEFAULT_MANIFEST_NAME} and {DEFAULT_SIGNATURE_NAME} "
-        "as release assets. See docs/security.md for details."
+        f"Manual upload: upload the app archive, {DEFAULT_MANIFEST_NAME}, and "
+        f"{DEFAULT_SIGNATURE_NAME} as release assets. See docs/security.md for details."
     )
 
 
@@ -432,7 +550,8 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     sign_parser.add_argument("--config", type=Path, help="App config to infer the application name from")
     sign_parser.add_argument("--application", help="Application name written to the manifest")
     sign_parser.add_argument("--version", help="Release version; inferred from archive filename by default")
-    sign_parser.add_argument("--archive", type=Path, help="Release source archive; inferred from dist/ by default")
+    sign_parser.add_argument("--archive", type=Path, help="Release app archive; inferred from dist/ by default")
+    sign_parser.add_argument("--archive-url", help="Archive URL written to the signed manifest")
     sign_parser.add_argument("--private-key", type=Path, default=DEFAULT_PRIVATE_KEY)
     sign_parser.add_argument("--out", type=Path, default=DEFAULT_DIST_DIR, help="Output directory")
 
@@ -441,7 +560,7 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     verify_parser.add_argument("--public-key", help="Base64 Ed25519 public key")
     verify_parser.add_argument("--manifest", type=Path, help="Manifest path; defaults to dist/launcher-manifest.yml")
     verify_parser.add_argument("--signature", type=Path, help="Signature path; defaults to dist/launcher-manifest.yml.sig")
-    verify_parser.add_argument("--archive", type=Path, help="Release source archive; inferred from dist/ by default")
+    verify_parser.add_argument("--archive", type=Path, help="Release app archive; inferred from dist/ by default")
     verify_parser.add_argument("--out", type=Path, default=DEFAULT_DIST_DIR, help="Directory containing default release assets")
 
     upload_parser = subparsers.add_parser("upload", help="Verify and upload manifest assets with gh or glab")
@@ -450,7 +569,7 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     upload_parser.add_argument("--public-key", help="Base64 Ed25519 public key")
     upload_parser.add_argument("--manifest", type=Path, help="Manifest path; defaults to dist/launcher-manifest.yml")
     upload_parser.add_argument("--signature", type=Path, help="Signature path; defaults to dist/launcher-manifest.yml.sig")
-    upload_parser.add_argument("--archive", type=Path, help="Release source archive; inferred from dist/ by default")
+    upload_parser.add_argument("--archive", type=Path, help="Release app archive; inferred from dist/ by default")
     upload_parser.add_argument("--out", type=Path, default=DEFAULT_DIST_DIR, help="Directory containing default release assets")
     upload_parser.add_argument("--dry-run", action="store_true", help="Print the upload command without running it")
 
@@ -479,6 +598,7 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
                 application=args.application,
                 version=args.version,
                 archive=args.archive,
+                archive_url=args.archive_url,
                 private_key_path=args.private_key,
                 out_dir=args.out,
                 config_path=args.config,

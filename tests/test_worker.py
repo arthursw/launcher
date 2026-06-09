@@ -29,7 +29,7 @@ def mock_config_file(tmp_path):
     import yaml
     config_data = {
         "name": "TestApp",
-        "main": "main.py",
+        "entrypoint": {"mode": "script", "script": "main.py"},
         "path": str(tmp_path / "apps"),
         "repository": "git@github.com:owner/repo.git",
         "auto_update": False,
@@ -395,6 +395,164 @@ class TestLauncherWorker:
 
         mock_env_instance.delete_environment.assert_called_once_with("TestApp")
 
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_project_entrypoint_installs_project_when_fingerprint_missing(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        tmp_path,
+        queues,
+        monkeypatch,
+    ):
+        """Project mode installs the package before launching when state is missing."""
+        import yaml
+
+        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        event_queue, response_queue = queues
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump({
+            "name": "TestApp",
+            "entrypoint": {"mode": "project", "command": "test-app-gui"},
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "configuration": "backend/pyproject.toml",
+        }))
+        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner.install_project.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        mock_runner.install_project.assert_called_once()
+        state = LauncherState.for_app("TestApp")
+        assert state.project_install_fingerprint
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_project_entrypoint_skips_project_install_when_fingerprint_matches(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        tmp_path,
+        queues,
+        monkeypatch,
+    ):
+        """Project mode should not reinstall when the stored fingerprint matches."""
+        import yaml
+        from launcher.environment import compute_project_install_fingerprint
+        from launcher.config import load_config
+
+        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        event_queue, response_queue = queues
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump({
+            "name": "TestApp",
+            "entrypoint": {"mode": "project", "command": "test-app-gui"},
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "configuration": "backend/pyproject.toml",
+        }))
+        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        config = load_config(config_file)
+        state = LauncherState.for_app("TestApp")
+        state.project_install_fingerprint = compute_project_install_fingerprint(config, "testapp-v1.0.0")
+        state.save()
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner.install_project.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        mock_runner.install_project.assert_not_called()
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_project_entrypoint_installs_project_when_environment_is_new_even_if_fingerprint_matches(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        tmp_path,
+        queues,
+        monkeypatch,
+    ):
+        """A fresh environment still needs the project package installed."""
+        import yaml
+        from launcher.environment import compute_project_install_fingerprint
+        from launcher.config import load_config
+
+        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        event_queue, response_queue = queues
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump({
+            "name": "TestApp",
+            "entrypoint": {"mode": "project", "command": "test-app-gui"},
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "configuration": "backend/pyproject.toml",
+        }))
+        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        config = load_config(config_file)
+        state = LauncherState.for_app("TestApp")
+        state.project_install_fingerprint = compute_project_install_fingerprint(config, "testapp-v1.0.0")
+        state.save()
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = False
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner.install_project.return_value = True
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        mock_runner.install_project.assert_called_once()
+
 
 class TestReinstallOnUpdate:
     """Tests for reinstall_on_update behavior."""
@@ -405,7 +563,7 @@ class TestReinstallOnUpdate:
         import yaml
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": str(tmp_path / "apps"),
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
@@ -523,7 +681,7 @@ class TestReinstallOnUpdate:
         # Create config with reinstall_on_update disabled
         config_data = {
             "name": "TestApp",
-            "main": "main.py",
+            "entrypoint": {"mode": "script", "script": "main.py"},
             "path": str(tmp_path / "apps"),
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,

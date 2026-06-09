@@ -1,7 +1,7 @@
 """Script execution and initialization monitoring."""
 
 import logging
-import os
+import shlex
 import subprocess
 import threading
 import time
@@ -11,6 +11,7 @@ from wetlands.environment import Environment
 
 from .config import AppConfig
 from .environment import LauncherEnvironmentManager
+from .paths import get_runtime_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class InitTimeoutError(RunnerError):
 
 
 class ScriptRunner:
-    """Runs the main script and monitors for initialization."""
+    """Runs the configured entrypoint and monitors initialization."""
 
     def __init__(
         self,
@@ -90,7 +91,7 @@ class ScriptRunner:
         self,
         output_callback: Optional[OutputCallback] = None,
     ) -> subprocess.Popen:
-        """Start the main script.
+        """Start the configured entrypoint.
 
         Args:
             output_callback: Optional callback for stdout lines
@@ -98,15 +99,15 @@ class ScriptRunner:
         Returns:
             The subprocess.Popen instance
         """
-        main_script_path = self.config.main_script_path
-        if not main_script_path.exists():
-            raise RunnerError(
-                f"Configured main script not found: {main_script_path}\n"
-                f"Launcher looked for `main: {self.config.main}` inside the downloaded sources at "
-                f"{self.config.sources_path}.\n"
-                "Update `main` in packaging/launcher/application.yml to the Python file that starts your app, "
-                "or include that file in the release archive."
-            )
+        if self.config.entrypoint.mode == "script":
+            command = self._script_command()
+            logger.info(f"Starting script entrypoint: {self.config.script_path}")
+        elif self.config.entrypoint.mode == "module":
+            command = self._module_command()
+            logger.info(f"Starting module entrypoint: {self.config.entrypoint.module}")
+        else:
+            command = self._project_command()
+            logger.info(f"Starting project command: {self.config.entrypoint.command}")
 
         working_directory = self.config.working_directory_path
         if not working_directory.exists():
@@ -117,8 +118,6 @@ class ScriptRunner:
                 "sources directory when `configuration: null`."
             )
 
-        logger.info(f"Starting main script: {main_script_path}")
-
         def on_output(line: str, _context: dict) -> None:
             with self._lock:
                 self._output_lines.append(line)
@@ -126,7 +125,7 @@ class ScriptRunner:
                 output_callback(line)
 
         self._process = self.env.execute_commands(
-            commands=[f'python -u "{main_script_path}"'],
+            commands=[command],
             popen_kwargs=self._launch_popen_kwargs(),
             wait=False,
         )
@@ -138,19 +137,118 @@ class ScriptRunner:
 
         return self._process
 
-    def _launch_popen_kwargs(self) -> dict:
-        env = os.environ.copy()
-        pythonpath_paths = [str(path) for path in self.config.pythonpath_paths]
-        existing_pythonpath = env.get("PYTHONPATH")
-        if existing_pythonpath:
-            pythonpath_paths.append(existing_pythonpath)
-        if pythonpath_paths:
-            env["PYTHONPATH"] = os.pathsep.join(pythonpath_paths)
+    def install_project(self) -> bool:
+        """Install the configured project package into the runtime environment."""
+        project_directory = self.config.project_directory_path
+        if not project_directory.exists():
+            raise RunnerError(
+                f"Configured project directory not found: {project_directory}\n"
+                "Update `entrypoint.project_directory` so it points to the Python "
+                "project directory inside the downloaded app sources."
+            )
+        if not project_directory.is_dir():
+            raise RunnerError(f"Configured project directory is not a directory: {project_directory}")
 
+        logger.info(f"Installing project package from: {project_directory}")
+        process = self.env.execute_commands(
+            commands=["python -m pip install ."],
+            popen_kwargs={"cwd": project_directory},
+            wait=True,
+        )
+        if process.returncode != 0:
+            logger.error(f"Project package install failed with return code {process.returncode}")
+            return False
+        logger.info("Project package installed successfully")
+        return True
+
+    def _script_command(self) -> str:
+        script_path = self.config.script_path
+        if script_path is None:
+            raise RunnerError("Script entrypoint is not configured")
+        if not script_path.exists():
+            raise RunnerError(
+                f"Configured script entrypoint not found: {script_path}\n"
+                f"Launcher looked for `entrypoint.script: {self.config.entrypoint.script}` "
+                "inside the downloaded sources at "
+                f"{self.config.sources_path}.\n"
+                "Update `entrypoint.script` in packaging/launcher/application.yml "
+                "to the Python file that starts your app, or include that file in "
+                "the release archive."
+            )
+        return f'python -u "{self._write_script_bootstrap(script_path)}"'
+
+    def _module_command(self) -> str:
+        if not self.config.entrypoint.module:
+            raise RunnerError("Module entrypoint is not configured")
+        return f'python -u "{self._write_module_bootstrap()}"'
+
+    def _project_command(self) -> str:
+        if not self.config.entrypoint.command:
+            raise RunnerError("Project command entrypoint is not configured")
+        return shlex.join([self.config.entrypoint.command, *self.config.entrypoint.args])
+
+    def _launch_popen_kwargs(self) -> dict:
         return {
             "cwd": self.config.working_directory_path,
-            "env": env,
         }
+
+    def _write_script_bootstrap(self, script_path) -> str:
+        runtime_dir = get_runtime_data_dir(self.config.name)
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        bootstrap_path = runtime_dir / "launcher-run.py"
+        sys_paths = self._launch_sys_paths(script_path)
+        argv = [str(script_path), *self.config.entrypoint.args]
+        bootstrap_path.write_text(
+            "\n".join(
+                [
+                    "# Generated by Launcher before starting the app.",
+                    "import runpy",
+                    "import sys",
+                    "",
+                    f"sys.path[:0] = {[str(path) for path in sys_paths]!r}",
+                    f"sys.argv = {argv!r}",
+                    f"runpy.run_path({str(script_path)!r}, run_name='__main__')",
+                    "",
+                ]
+            )
+        )
+        return bootstrap_path.as_posix()
+
+    def _write_module_bootstrap(self) -> str:
+        runtime_dir = get_runtime_data_dir(self.config.name)
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        bootstrap_path = runtime_dir / "launcher-run.py"
+        module = self.config.entrypoint.module
+        argv = [module, *self.config.entrypoint.args]
+        sys_paths = self._launch_sys_paths(None)
+        bootstrap_path.write_text(
+            "\n".join(
+                [
+                    "# Generated by Launcher before starting the app.",
+                    "import runpy",
+                    "import sys",
+                    "",
+                    f"sys.path[:0] = {[str(path) for path in sys_paths]!r}",
+                    f"sys.argv = {argv!r}",
+                    f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)",
+                    "",
+                ]
+            )
+        )
+        return bootstrap_path.as_posix()
+
+    def _launch_sys_paths(self, script_path) -> list:
+        paths = [*self.config.pythonpath_paths]
+        if script_path is not None:
+            paths.append(script_path.parent)
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                unique_paths.append(path)
+        return unique_paths
 
     def ensure_still_running(self, grace_seconds: float = 1.0) -> None:
         """Raise if the launched application exits immediately."""
@@ -165,7 +263,8 @@ class ScriptRunner:
         recent_output = self.recent_output()
         message = (
             f"Application exited immediately after launch with exit code {exit_code}.\n"
-            f"Launcher started `main: {self.config.main}` from {self.config.main_script_path}.\n"
+            f"Launcher started `{self.config.entrypoint_label}` from "
+            f"{self.config.working_directory_path}.\n"
             "Run the same script from the configured environment to debug the app, "
             "or configure `init_message` if Launcher should wait for a startup signal."
         )

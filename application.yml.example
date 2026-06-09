@@ -1,10 +1,22 @@
 # Example application.yml configuration for the launcher.
 
 name: ExampleApp
-main: main.py
-# Relative paths are resolved inside the launcher's per-app runtime data
-# directory, not the process working directory.
-path: "."
+entrypoint:
+  mode: script
+  script: main.py
+# Other entrypoint modes:
+# entrypoint:
+#   mode: module
+#   module: example_app
+#   args:
+#     - --desktop
+# entrypoint:
+#   mode: project
+#   command: example-app-gui
+#   project_directory: .
+# Optional. Omit for the portable default. Relative paths are resolved inside
+# the launcher's per-app runtime data directory, not the process working directory.
+# path: "."
 
 # Use repository inference for GitHub/GitLab, or provide explicit endpoints.
 repository: git@github.com:owner/exampleapp.git
@@ -12,7 +24,6 @@ repository: git@github.com:owner/exampleapp.git
 # gitlab_project_id: "123456"
 # api: https://api.github.com
 # releases_endpoint: /repos/owner/exampleapp/releases/latest
-# archive_endpoint: /repos/owner/exampleapp/zipball/{ref}
 
 auto_update: true
 # version: v1.2.3
@@ -22,10 +33,11 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the manifest and signature produced by
+  # These default URLs match the archive, manifest, and signature produced by
   # launcher release sign and uploaded by launcher release upload.
   manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
   signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
+  archive_url: "https://github.com/owner/exampleapp/releases/download/{version}/{archive_name}"
 
 # The dependency config must exist in the downloaded sources. Use
 # configuration: null only when the app intentionally has no dependency file.
@@ -34,8 +46,8 @@ configuration: pyproject.toml
 # installed during development with: uv sync --extra desktop
 # extras:
 #   - desktop
-# Launcher starts from the dependency config directory by default and adds that
-# directory, plus its src/ folder when present, to PYTHONPATH. Override only for
+# Launcher starts from the dependency config directory by default and makes that
+# directory, plus its src/ folder when present, importable. Override only for
 # unusual layouts:
 # working_directory: backend
 # pythonpath:

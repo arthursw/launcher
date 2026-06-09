@@ -9,6 +9,7 @@ import yaml
 from .paths import get_runtime_data_dir
 
 VALID_CERT_EXTENSIONS = (".pem", ".crt", ".cer")
+ENTRYPOINT_MODES = {"script", "module", "project"}
 
 
 @dataclass
@@ -70,6 +71,7 @@ class TrustConfig:
     public_key: str
     manifest_url: str
     signature_url: str
+    archive_url: str
 
     def __post_init__(self) -> None:
         """Validate trust configuration."""
@@ -81,6 +83,68 @@ class TrustConfig:
             raise ValueError("trust.manifest_url is required")
         if not self.signature_url:
             raise ValueError("trust.signature_url is required")
+        if not self.archive_url:
+            raise ValueError("trust.archive_url is required")
+
+
+@dataclass
+class EntryPointConfig:
+    """Application launch entrypoint."""
+
+    mode: str
+    script: Optional[str] = None
+    module: Optional[str] = None
+    command: Optional[str] = None
+    project_directory: Optional[str] = None
+    args: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Validate entrypoint configuration."""
+        if self.mode not in ENTRYPOINT_MODES:
+            expected = ", ".join(sorted(ENTRYPOINT_MODES))
+            raise ValueError(f"entrypoint.mode must be one of: {expected}")
+        if not isinstance(self.args, list) or not all(
+            isinstance(item, str) for item in self.args
+        ):
+            raise ValueError("entrypoint.args must be a list of strings")
+
+        if self.mode == "script":
+            if not self.script:
+                raise ValueError("entrypoint.script is required when entrypoint.mode is 'script'")
+            if self.module or self.command or self.project_directory:
+                raise ValueError(
+                    "script entrypoints can only define entrypoint.script and entrypoint.args"
+                )
+        elif self.mode == "module":
+            if not self.module:
+                raise ValueError("entrypoint.module is required when entrypoint.mode is 'module'")
+            if self.script or self.command or self.project_directory:
+                raise ValueError(
+                    "module entrypoints can only define entrypoint.module and entrypoint.args"
+                )
+        elif self.mode == "project":
+            if not self.command:
+                raise ValueError("entrypoint.command is required when entrypoint.mode is 'project'")
+            if self.script or self.module:
+                raise ValueError(
+                    "project entrypoints can only define entrypoint.command, "
+                    "entrypoint.project_directory, and entrypoint.args"
+                )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to YAML data."""
+        data: dict[str, Any] = {"mode": self.mode}
+        if self.script:
+            data["script"] = self.script
+        if self.module:
+            data["module"] = self.module
+        if self.command:
+            data["command"] = self.command
+        if self.project_directory:
+            data["project_directory"] = self.project_directory
+        if self.args:
+            data["args"] = self.args
+        return data
 
 
 @dataclass
@@ -88,8 +152,8 @@ class AppConfig:
     """Application configuration from application.yml."""
 
     name: str
-    main: str
-    path: str
+    entrypoint: EntryPointConfig
+    path: str = "."
     repository: Optional[str] = None
     gitlab_project_id: Optional[str] = None
     api: Optional[str] = None
@@ -114,14 +178,18 @@ class AppConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
-        if not self.repository and not (self.api and self.releases_endpoint and self.archive_endpoint):
+        if not isinstance(self.entrypoint, EntryPointConfig):
+            raise ValueError("'entrypoint' must be an EntryPointConfig")
+        if not self.repository and not (self.api and self.releases_endpoint):
             raise ValueError(
-                "Either 'repository' or all of 'api', 'releases_endpoint', and 'archive_endpoint' must be provided"
+                "Either 'repository' or both 'api' and 'releases_endpoint' must be provided"
             )
         if not isinstance(self.extras, list) or not all(
             isinstance(item, str) for item in self.extras
         ):
             raise ValueError("'extras' must be a list of strings")
+        if not isinstance(self.path, str):
+            raise ValueError("'path' must be a string")
         if self.working_directory is not None and not isinstance(self.working_directory, str):
             raise ValueError("'working_directory' must be a string")
         if self.pythonpath is not None and (
@@ -169,9 +237,11 @@ class AppConfig:
         return self.get_sources_path()
 
     @property
-    def main_script_path(self) -> Path:
-        """Get the full path to the main script."""
-        return self.sources_path / self.main
+    def script_path(self) -> Optional[Path]:
+        """Get the full path to the configured script entrypoint."""
+        if self.entrypoint.mode != "script" or not self.entrypoint.script:
+            return None
+        return self.sources_path / self.entrypoint.script
 
     @property
     def config_file_path(self) -> Optional[Path]:
@@ -194,8 +264,24 @@ class AppConfig:
         return self.sources_path
 
     @property
+    def project_directory_path(self) -> Path:
+        """Get the project directory for project entrypoints."""
+        if self.entrypoint.project_directory is not None:
+            return self._source_relative_path(self.entrypoint.project_directory)
+
+        if self.configuration is not None:
+            config_parent = Path(self.configuration).parent
+            if config_parent != Path("."):
+                return self.sources_path / config_parent
+
+        if self.working_directory is not None:
+            return self.working_directory_path
+
+        return self.sources_path
+
+    @property
     def pythonpath_paths(self) -> list[Path]:
-        """Get paths that should be prepended to PYTHONPATH for the app."""
+        """Get paths that should be added to the app's Python import path."""
         if self.pythonpath is not None:
             return [self._source_relative_path(path) for path in self.pythonpath]
 
@@ -220,6 +306,15 @@ class AppConfig:
             return self.sources_path / self.install
         return None
 
+    @property
+    def entrypoint_label(self) -> str:
+        """Return a concise entrypoint description for logs and errors."""
+        if self.entrypoint.mode == "script":
+            return f"entrypoint.script: {self.entrypoint.script}"
+        if self.entrypoint.mode == "module":
+            return f"entrypoint.module: {self.entrypoint.module}"
+        return f"entrypoint.command: {self.entrypoint.command}"
+
     def save(self) -> None:
         """Save the current configuration back to the YAML file."""
         if not self._config_path:
@@ -227,9 +322,10 @@ class AppConfig:
 
         data: dict[str, Any] = {
             "name": self.name,
-            "main": self.main,
-            "path": self.path,
+            "entrypoint": self.entrypoint.to_dict(),
         }
+        if self.path != ".":
+            data["path"] = self.path
 
         # Add optional fields if set
         if self.repository:
@@ -279,6 +375,7 @@ class AppConfig:
                 "public_key": self.trust.public_key,
                 "manifest_url": self.trust.manifest_url,
                 "signature_url": self.trust.signature_url,
+                "archive_url": self.trust.archive_url,
             }
 
         with open(self._config_path, "w") as f:
@@ -319,10 +416,12 @@ def load_config(config_path: Path) -> AppConfig:
         raise ValueError("Configuration file is empty")
 
     # Check required fields
-    required_fields = ["name", "main", "path"]
+    required_fields = ["name", "entrypoint"]
     for field_name in required_fields:
         if field_name not in data:
             raise ValueError(f"Required field '{field_name}' is missing from configuration")
+    if not isinstance(data["entrypoint"], dict):
+        raise ValueError("'entrypoint' must be a mapping")
 
     # Parse proxy settings
     proxy_data = data.pop("proxy_servers", {}) or {}
@@ -338,8 +437,8 @@ def load_config(config_path: Path) -> AppConfig:
     # Create config instance
     config = AppConfig(
         name=data["name"],
-        main=data["main"],
-        path=data["path"],
+        entrypoint=EntryPointConfig(**data["entrypoint"]),
+        path=data.get("path") or ".",
         repository=data.get("repository"),
         gitlab_project_id=data.get("gitlab_project_id"),
         api=data.get("api"),

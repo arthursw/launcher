@@ -43,7 +43,9 @@ def test_sign_infers_config_archive_and_version_from_defaults(tmp_path, monkeypa
     dist_dir = tmp_path / "dist"
     app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
     (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
     public_key = release_cli.keygen()
 
@@ -54,10 +56,12 @@ def test_sign_infers_config_archive_and_version_from_defaults(tmp_path, monkeypa
     assert signature_path.resolve() == dist_dir / "launcher-manifest.yml.sig"
     manifest = yaml.safe_load(manifest_path.read_text())
     assert manifest == {
-        "schema_version": 1,
+        "schema_version": 2,
         "application": "MyApp",
         "version": "v1.2.3",
         "archive": {
+            "name": "myapp-v1.2.3.zip",
+            "url": "https://github.com/my-org/myapp/releases/download/v1.2.3/myapp-v1.2.3.zip",
             "sha256": release_cli.sha256_file(dist_dir / "myapp-v1.2.3.zip"),
         },
     }
@@ -71,7 +75,9 @@ def test_sign_infers_packaging_launcher_config_by_default(tmp_path, monkeypatch)
     dist_dir = tmp_path / "dist"
     app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "application.yml").write_text("name: PackagedApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: PackagedApp\nrepository: https://gitlab.com/my-org/packaged-app.git\n"
+    )
     (dist_dir / "packaged-app-v2.0.0.zip").write_bytes(_release_zip_bytes())
     release_cli.keygen()
 
@@ -80,6 +86,10 @@ def test_sign_infers_packaging_launcher_config_by_default(tmp_path, monkeypatch)
     manifest = yaml.safe_load(manifest_path.read_text())
     assert manifest["application"] == "PackagedApp"
     assert manifest["version"] == "v2.0.0"
+    assert (
+        manifest["archive"]["url"]
+        == "https://gitlab.com/my-org/packaged-app/-/releases/v2.0.0/downloads/packaged-app-v2.0.0.zip"
+    )
 
 
 def test_sign_accepts_explicit_version_for_unversioned_archive(tmp_path, monkeypatch):
@@ -90,7 +100,9 @@ def test_sign_accepts_explicit_version_for_unversioned_archive(tmp_path, monkeyp
     dist_dir = tmp_path / "dist"
     app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
     (dist_dir / "myapp.zip").write_bytes(_release_zip_bytes())
     release_cli.keygen()
 
@@ -98,7 +110,93 @@ def test_sign_accepts_explicit_version_for_unversioned_archive(tmp_path, monkeyp
 
     manifest = yaml.safe_load(manifest_path.read_text())
     assert manifest["version"] == "v1.2.3"
+    assert manifest["archive"]["name"] == "myapp.zip"
+    assert manifest["archive"]["url"].endswith("/v1.2.3/myapp.zip")
     assert manifest["archive"]["sha256"] == release_cli.sha256_file(dist_dir / "myapp.zip")
+
+
+def test_sign_uses_trust_archive_url_template(tmp_path, monkeypatch):
+    """trust.archive_url should define the archive URL when configured."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").write_text("")
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (app_dir / "application.yml").write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "trust:",
+                "  mode: signed_manifest",
+                "  public_key: placeholder",
+                "  manifest_url: https://assets.example.com/{version}/launcher-manifest.yml",
+                "  signature_url: https://assets.example.com/{version}/launcher-manifest.yml.sig",
+                "  archive_url: https://assets.example.com/{version}/{archive_name}",
+            ]
+        )
+    )
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    release_cli.keygen()
+
+    manifest_path, _, _ = release_cli.sign_release()
+
+    manifest = yaml.safe_load(manifest_path.read_text())
+    assert manifest["archive"]["url"] == "https://assets.example.com/v1.2.3/myapp-v1.2.3.zip"
+
+
+def test_sign_archive_url_override_wins(tmp_path, monkeypatch):
+    """--archive-url should override config and repository defaults."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").write_text("")
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    release_cli.keygen()
+
+    manifest_path, _, _ = release_cli.sign_release(
+        archive_url="https://downloads.example.com/apps/{version}/{archive_name}"
+    )
+
+    manifest = yaml.safe_load(manifest_path.read_text())
+    assert manifest["archive"]["url"] == "https://downloads.example.com/apps/v1.2.3/myapp-v1.2.3.zip"
+
+
+def test_sign_rejects_unresolved_archive_url_placeholder(tmp_path, monkeypatch):
+    """Archive URL templates should fail clearly for unsupported placeholders."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").write_text("")
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    release_cli.keygen()
+
+    with pytest.raises(release_cli.ReleaseCliError, match="unsupported placeholder"):
+        release_cli.sign_release(archive_url="https://example.com/{tag}/{archive_name}")
+
+
+def test_sign_rejects_invalid_archive_url(tmp_path, monkeypatch):
+    """Archive URLs written into signed manifests must be absolute HTTP(S) URLs."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").write_text("")
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    release_cli.keygen()
+
+    with pytest.raises(release_cli.ReleaseCliError, match=r"absolute http\(s\) URL"):
+        release_cli.sign_release(archive_url="not-a-url")
 
 
 def test_sign_explains_unversioned_archive_name(tmp_path, monkeypatch):
@@ -109,7 +207,9 @@ def test_sign_explains_unversioned_archive_name(tmp_path, monkeypatch):
     dist_dir = tmp_path / "dist"
     app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
     archive = dist_dir / "myapp.zip"
     archive.write_bytes(_release_zip_bytes())
     release_cli.keygen()
@@ -182,6 +282,7 @@ def test_verify_uses_config_public_key_and_default_dist_assets(tmp_path, monkeyp
                 f'  public_key: "{public_key}"',
                 "  manifest_url: https://example.com/{version}/launcher-manifest.yml",
                 "  signature_url: https://example.com/{version}/launcher-manifest.yml.sig",
+                "  archive_url: https://example.com/{version}/{archive_name}",
             ]
         )
     )
@@ -212,6 +313,7 @@ def test_verify_uses_packaging_launcher_config_public_key(tmp_path, monkeypatch)
                 f'  public_key: "{public_key}"',
                 "  manifest_url: https://example.com/{version}/launcher-manifest.yml",
                 "  signature_url: https://example.com/{version}/launcher-manifest.yml.sig",
+                "  archive_url: https://example.com/{version}/{archive_name}",
             ]
         )
     )
@@ -233,7 +335,9 @@ def test_verify_rejects_tampered_archive(tmp_path, monkeypatch):
     archive = dist_dir / "myapp-v1.2.3.zip"
     archive.write_bytes(_release_zip_bytes())
     public_key = release_cli.keygen()
-    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
     release_cli.sign_release()
     archive.write_bytes(b"tampered")
 
@@ -282,7 +386,9 @@ def test_verify_rejects_archive_with_unsafe_symlink(tmp_path, monkeypatch):
     dist_dir.mkdir()
     archive = dist_dir / "myapp-v1.2.3.zip"
     public_key = release_cli.keygen()
-    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
     archive.write_bytes(_release_zip_bytes())
     release_cli.sign_release()
     archive.write_bytes(_release_zip_bytes(symlinks={"root/.myapp": "/Users/developer/.myapp/"}))
@@ -305,7 +411,9 @@ def test_cli_verify_prints_success(tmp_path, monkeypatch, capsys):
     dist_dir = tmp_path / "dist"
     app_dir.mkdir(parents=True)
     dist_dir.mkdir()
-    (app_dir / "application.yml").write_text("name: MyApp\n")
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
     (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
     public_key = release_cli.keygen()
     release_cli.sign_release()
@@ -349,6 +457,7 @@ def test_upload_dry_run_uses_github_cli(tmp_path, monkeypatch):
             "release",
             "upload",
             "v1.2.3",
+            "dist/myapp-v1.2.3.zip",
             "dist/launcher-manifest.yml",
             "dist/launcher-manifest.yml.sig",
             "--clobber",
@@ -389,6 +498,7 @@ def test_upload_dry_run_uses_gitlab_cli(tmp_path, monkeypatch):
             "release",
             "upload",
             "v1.2.3",
+            "dist/myapp-v1.2.3.zip",
             "dist/launcher-manifest.yml",
             "dist/launcher-manifest.yml.sig",
             "--use-package-registry",

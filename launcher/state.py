@@ -36,6 +36,7 @@ class LauncherState:
     state_path: Path
     version: Optional[str] = None
     dependency_hash: Optional[str] = None
+    project_install_fingerprint: Optional[str] = None
     proxy_http: Optional[ProxyCredential] = None
     proxy_https: Optional[ProxyCredential] = None
     proxy_ssl_cert_file: Optional[str] = None
@@ -64,6 +65,7 @@ class LauncherState:
             state_path=state_path,
             version=data.get("version"),
             dependency_hash=data.get("dependency_hash"),
+            project_install_fingerprint=data.get("project_install_fingerprint"),
             proxy_http=_credential_from_dict(proxy_data.get("http")),
             proxy_https=_credential_from_dict(proxy_data.get("https")),
             proxy_ssl_cert_file=proxy_data.get("ssl_cert_file"),
@@ -77,6 +79,8 @@ class LauncherState:
             data["version"] = self.version
         if self.dependency_hash:
             data["dependency_hash"] = self.dependency_hash
+        if self.project_install_fingerprint:
+            data["project_install_fingerprint"] = self.project_install_fingerprint
 
         proxy: dict[str, Any] = {}
         if self.proxy_http:

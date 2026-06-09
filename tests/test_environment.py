@@ -3,8 +3,12 @@
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from launcher.config import AppConfig
-from launcher.environment import LauncherEnvironmentManager, compute_dependency_hash
+from launcher.config import AppConfig, EntryPointConfig
+from launcher.environment import (
+    LauncherEnvironmentManager,
+    compute_dependency_hash,
+    compute_project_install_fingerprint,
+)
 
 
 class TestLauncherEnvironmentManager:
@@ -265,7 +269,7 @@ class TestDependencyHash:
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=str(tmp_path / "apps"),
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -283,7 +287,7 @@ class TestDependencyHash:
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=str(tmp_path / "apps"),
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -307,7 +311,7 @@ class TestDependencyHash:
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path=str(tmp_path / "apps"),
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
@@ -320,3 +324,59 @@ class TestDependencyHash:
         config.extras = ["desktop", "server"]
 
         assert compute_dependency_hash(config) != first
+
+    def test_project_install_fingerprint_changes_when_version_changes(self, tmp_path):
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='a'\n")
+        config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="project", command="test-app", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="backend/pyproject.toml",
+        )
+
+        first = compute_project_install_fingerprint(config, "v1.0.0")
+
+        assert compute_project_install_fingerprint(config, "v1.0.1") != first
+
+    def test_project_install_fingerprint_changes_when_project_metadata_changes(self, tmp_path):
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='a'\n")
+        config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="project", command="test-app", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="backend/pyproject.toml",
+        )
+        first = compute_project_install_fingerprint(config, "v1.0.0")
+
+        (project / "pyproject.toml").write_text("[project]\nname='b'\n")
+
+        assert compute_project_install_fingerprint(config, "v1.0.0") != first
+
+    def test_project_install_fingerprint_changes_when_project_entrypoint_changes(self, tmp_path):
+        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname='a'\n")
+        config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="project", command="test-app", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="git@github.com:owner/repo.git",
+            version="v1.0.0",
+            configuration="backend/pyproject.toml",
+        )
+        first = compute_project_install_fingerprint(config, "v1.0.0")
+
+        config.entrypoint.command = "test-app-gui"
+
+        assert compute_project_install_fingerprint(config, "v1.0.0") != first

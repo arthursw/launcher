@@ -233,3 +233,40 @@ def compute_dependency_hash(config: "AppConfig") -> str:
         digest.update(b"\0")
 
     return digest.hexdigest()
+
+
+def compute_project_install_fingerprint(config: "AppConfig", version: str) -> str:
+    """Hash project-mode inputs that should trigger package reinstall."""
+    digest = hashlib.sha256()
+    digest.update(b"project-install\0")
+    digest.update(version.encode("utf-8"))
+    digest.update(b"\0")
+
+    entrypoint = config.entrypoint
+    for value in (
+        entrypoint.mode,
+        entrypoint.command or "",
+        entrypoint.project_directory or "",
+        config.configuration or "",
+        str(config.project_directory_path),
+    ):
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+
+    for arg in entrypoint.args:
+        digest.update(arg.encode("utf-8"))
+        digest.update(b"\0")
+    for extra in sorted(set(config.extras)):
+        digest.update(extra.encode("utf-8"))
+        digest.update(b"\0")
+
+    project_directory = config.project_directory_path
+    for file_name in ("pyproject.toml", "setup.cfg", "setup.py"):
+        path = project_directory / file_name
+        if path.exists():
+            digest.update(file_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+
+    return digest.hexdigest()

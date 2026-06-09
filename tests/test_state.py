@@ -9,18 +9,20 @@ from launcher.paths import get_default_state_dir
 from launcher.state import LauncherState
 
 
-def test_runtime_state_persists_version_and_dependency_hash(tmp_path):
+def test_runtime_state_persists_version_dependency_hash_and_project_install(tmp_path):
     """Mutable runtime fields are stored outside application.yml."""
     state_path = tmp_path / "state.yml"
     state = LauncherState.load("TestApp", state_path)
     state.version = "v1.2.3"
     state.dependency_hash = "abc123"
+    state.project_install_fingerprint = "project456"
     state.save()
 
     reloaded = LauncherState.load("TestApp", state_path)
 
     assert reloaded.version == "v1.2.3"
     assert reloaded.dependency_hash == "abc123"
+    assert reloaded.project_install_fingerprint == "project456"
 
 
 def test_proxy_password_is_not_written_to_yaml(tmp_path):

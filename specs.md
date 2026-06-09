@@ -5,19 +5,18 @@ specified by `packaging/launcher/application.yml` in the app repository.
 
 ## Production Safety Model
 
-Updates require a signed manifest. The launcher resolves the target version,
-downloads `launcher-manifest.yml` and `launcher-manifest.yml.sig`, verifies the
-detached Ed25519 signature using the bundled public key, then parses the
-manifest. It requires `schema_version: 1`, matching `application`, matching
-`version`, and a valid archive SHA-256. The source archive is downloaded only
-after manifest verification and is extracted only if its SHA-256 matches the
-signed manifest.
+Updates require a signed manifest.
+The launcher resolves the target version, downloads `launcher-manifest.yml` and `launcher-manifest.yml.sig`, verifies the detached Ed25519 signature using the bundled public key, then parses the manifest.
+It requires `schema_version: 2`, matching `application`, matching `version`, a valid `archive.name`, a valid `archive.url`, and a valid archive SHA-256.
+The app archive is downloaded from the exact `archive.url` in the verified manifest and is extracted only if its SHA-256 matches the signed manifest.
 
 The project provides one developer CLI, `launcher`, for app-repo packaging,
 building, and release assets:
 
 - `launcher init` creates `packaging/launcher/application.yml` and default
   launcher assets in the app repository.
+- `launcher config check` validates `packaging/launcher/application.yml`
+  without starting the app or building the executable.
 - `launcher build` generates PyInstaller build files and writes the launcher
   executable output under `dist/launcher/`, separate from app release assets.
 - `launcher release keygen` creates an Ed25519 private key, adds the key path
@@ -29,9 +28,9 @@ building, and release assets:
 - `launcher release verify` checks the manifest signature and archive hash
   before release assets are uploaded.
 - `launcher release upload` runs verification, then uses an installed and
-  authenticated official provider CLI (`gh` or `glab`) to upload the manifest
-  and signature. The launcher does not install these tools or manage provider
-  API tokens.
+  authenticated official provider CLI (`gh` or `glab`) to upload the app archive,
+  manifest, and signature. The launcher does not install these tools or manage
+  provider API tokens.
 
 The packaged app config is immutable at runtime. Mutable values such as the
 installed version, dependency hash, and proxy metadata are stored in OS app
@@ -55,9 +54,13 @@ completed sources into place without overwriting an existing target.
 
 Runtime environments are recreated when dependency inputs change. The dependency
 hash includes the configured dependency file, common lock files, and the optional
-install script.
+install script. Project entrypoints store a separate project install fingerprint
+so the package is reinstalled when the app release or project install inputs
+change without necessarily recreating the dependency environment.
 
-Its primary goal is to ensure the application's source code is present and up-to-date, set up the necessary Python environment, and then launch the main application (run the main script located in the downloaded sources).
+Its primary goal is to ensure the application's source code is present and
+up-to-date, set up the necessary Python environment, and then launch the
+configured script, module, or installed project command.
 
 The project will be managed with `uv` and a `pyproject.toml`. App repositories
 consume Launcher as a pinned development dependency, not by forking or cloning
@@ -69,12 +72,14 @@ built from the installed Launcher package plus the app-owned files in
 The `application.yml` will look as follow:
 ```yaml
 name: ExampleApp                                                         # The name of the application (used for the environment name)
-repository: git@github.com:owner/exampleapp.git                          # The git repository URL (optional if api, releases_endpoint, and archive_endpoint are provided)
-api: https://api.github.com/                                             # The API URL to get releases and sources (optional if repository is provided)
+repository: git@github.com:owner/exampleapp.git                          # The git repository URL (optional if api and releases_endpoint are provided)
+api: https://api.github.com/                                             # The API URL to get releases (optional if repository is provided)
 releases_endpoint: /repos/owner/exampleapp/releases/latest               # The API endpoint to get the latest release (optional if repository is provided)
-archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
-main: main.py                                                            # The main script to execute in the sources
-path: "."                                                                # The directory in which to extract the sources; relative paths are resolved inside the launcher's per-app runtime data directory.
+entrypoint:                                                              # How to start the app: script, module, or project
+  mode: script
+  script: main.py
+  args: []
+path: "."                                                                # Optional directory in which to extract the sources; defaults to ".". Relative paths are resolved inside the launcher's per-app runtime data directory.
 version: v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The dependency config file in the downloaded sources. Can be null only when no dependency config exists.
@@ -91,9 +96,15 @@ proxy_servers:                                                           # The p
   http: http://username:password@corp.com:8080
   https: https://username:password@corp.com:8080
   ssl_cert_file: /path/to/corporate-ca.pem                               # Custom CA certificate for SSL-intercepting proxies (optional)
+trust:
+  mode: signed_manifest
+  public_key: "<base64-ed25519-public-key>"
+  manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
+  signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
+  archive_url: "https://github.com/owner/exampleapp/releases/download/{version}/{archive_name}"
 ```
 
-The `repository` attribute allows simplifying configuration by automatically inferring the API endpoints. Instead of specifying `api`, `releases_endpoint`, and `archive_endpoint` separately, you can provide a single `repository` attribute:
+The `repository` attribute allows simplifying configuration by automatically inferring the release API endpoint. Instead of specifying `api` and `releases_endpoint` separately, you can provide a single `repository` attribute:
 
 - The launcher will parse the repository URL and infer the API endpoints for GitHub, GitLab, or generic git hosts
 - Supported formats:
@@ -107,7 +118,7 @@ The `repository` attribute allows simplifying configuration by automatically inf
 - **GitHub:** Uses `/repos/{owner}/{repo}/releases/latest` endpoint
 - **GitLab:** Uses `/projects/{id}/releases` endpoint
 
-This means the repository must have at least one **release** for auto-update to work. The release must have a tag associated with it (the launcher will download the sources for that tag).
+This means the repository must have at least one **release** for auto-update to work. The release must have a tag associated with it, and Launcher will download the signed manifest and the app archive named by that manifest for the selected tag.
 
 Examples:
 
@@ -115,8 +126,9 @@ Examples:
 ```yaml
 name: MyApp
 repository: git@github.com:myorg/myapp.git
-main: main.py
-path: "."
+entrypoint:
+  mode: script
+  script: main.py
 auto_update: true
 configuration: pyproject.toml
 ```
@@ -126,9 +138,9 @@ configuration: pyproject.toml
 name: MyApp
 api: https://my-custom-api.com/ 
 releases_endpoint: /repos/owner/exampleapp/releases/latest               # The API endpoint to get the latest release (optional if repository is provided)
-archive_endpoint: /repos/owner/exampleapp/zipball/{ref}                  # The API endpoint to get the sources archive (optional if repository is provided)
-main: main.py
-path: "."
+entrypoint:
+  mode: module
+  module: exampleapp
 version: v1.0.0
 auto_update: true
 configuration: pyproject.toml
@@ -140,10 +152,10 @@ This launcher will:
 - if `auto_update`: check the latest release from `api`/`releases_endpoint` and use this latest release (which has a corresponding tag) in the following format: `tagname`
 - otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
 - in all cases: check if the sources for this current version (`appname-tagname`) exist at `path`; relative `path` values are resolved inside the launcher's per-app runtime data directory.
-- if the sources do not exist: download them from the `archive_endpoint` and extract them in the resolved `path`
+- if the sources do not exist: download and verify the signed manifest/signature, download `archive.url` from the manifest, verify `archive.sha256`, and extract the archive in the resolved `path`
 - save mutable runtime values such as installed version in OS app data, not in
   the packaged config
-- get or create the environment and execute the main script: 
+- get or create the environment and execute the configured entrypoint:
   - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
   - if the environment does not exists: 
     - create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a `pixi.toml`, `environment.yml` or `requirements.txt` file.)
@@ -151,8 +163,15 @@ This launcher will:
     - run the python install script defined by the `install` attribute if any
   - if the environment already exists but new sources were just downloaded and `reinstall_on_update` is true:
     - run the python install script defined by the `install` attribute
-- run the main script defined by the `main` attribute (located in `path`/`appname-tagname`) from the configured or inferred `working_directory`
-- prepend configured or inferred `pythonpath` entries so source-layout packages are importable
+- for `entrypoint.mode: script`, run the configured Python file from the
+  downloaded sources
+- for `entrypoint.mode: module`, run the configured module with `python -m`
+  semantics from the downloaded sources
+- for `entrypoint.mode: project`, install the project package from
+  `entrypoint.project_directory` with `python -m pip install .`, then run the
+  configured console command
+- prepend configured or inferred `pythonpath` entries so source-layout packages
+  are importable in script and module modes
 - if `init_message` is configured, read stdout and wait for it; this confirms the app finished initializing
 - if the `init_message` is not in stdout for `init_timeout` seconds: explain that reinstalling can fix a corrupted local environment but not a broken release, then ask the user to reinstall, exit, or wait more.
 - if `init_message` is not configured, verify that the app does not exit immediately, then let it keep running.

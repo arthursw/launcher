@@ -12,10 +12,11 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from launcher.config import AppConfig, ProxySettings, TrustConfig
+from launcher.config import AppConfig, EntryPointConfig, ProxySettings, TrustConfig
 from launcher.updater import (
     fetch_latest_release,
     fetch_signed_manifest,
+    parse_manifest,
     check_sources_exist,
     download_and_extract_sources,
     update_sources,
@@ -31,7 +32,7 @@ def mock_config():
     """Create a mock AppConfig."""
     return AppConfig(
         name="TestApp",
-        main="main.py",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
         path="/tmp/test_apps",
         repository="git@github.com:owner/repo.git"
     )
@@ -50,6 +51,7 @@ def signed_config(mock_config):
         public_key=base64.b64encode(public_key).decode("ascii"),
         manifest_url="https://example.com/{version}/launcher-manifest.yml",
         signature_url="https://example.com/{version}/launcher-manifest.yml.sig",
+        archive_url="https://example.com/{version}/{archive_name}",
     )
     return mock_config, private_key
 
@@ -62,13 +64,21 @@ def _zip_bytes(files: dict[str, str]) -> bytes:
     return zip_buffer.getvalue()
 
 
+def _archive_url(version: str = "v1.0.0") -> str:
+    return f"https://downloads.example.com/{version}/testapp-{version}.zip"
+
+
 def _manifest_bytes(app: str, version: str, archive_bytes: bytes) -> bytes:
     return yaml.safe_dump(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "application": app,
             "version": version,
-            "archive": {"sha256": hashlib.sha256(archive_bytes).hexdigest()},
+            "archive": {
+                "name": f"testapp-{version}.zip",
+                "url": _archive_url(version),
+                "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            },
         },
         sort_keys=False,
     ).encode("utf-8")
@@ -126,7 +136,7 @@ class TestFetchLatestRelease:
         from launcher.config import AppConfig
         mock_config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path="/tmp/test_apps",
             repository="git@gitlab.com:owner/repo.git"
         )
@@ -148,7 +158,7 @@ class TestFetchLatestRelease:
         from launcher.config import AppConfig
         mock_config = AppConfig(
             name="TestApp",
-            main="main.py",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
             path="/tmp/test_apps",
             repository="git@gitlab.com:owner/repo.git"
         )
@@ -262,7 +272,7 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         # Download and extract
-        result = download_and_extract_sources(mock_config, "v1.0.0")
+        result = download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         # Verify extraction
         assert result.exists()
@@ -291,7 +301,7 @@ class TestDownloadAndExtractSources:
         def progress_callback(current, total, message):
             progress_calls.append((current, total, message))
 
-        download_and_extract_sources(mock_config, "v1.0.0", progress_callback=progress_callback)
+        download_and_extract_sources(mock_config, "v1.0.0", progress_callback=progress_callback, archive_url=_archive_url())
 
         # Verify progress was reported
         assert len(progress_calls) > 0
@@ -303,7 +313,7 @@ class TestDownloadAndExtractSources:
         mock_get.side_effect = requests.exceptions.ConnectionError()
 
         with pytest.raises(NetworkError, match="Failed to download"):
-            download_and_extract_sources(mock_config, "v1.0.0")
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
     @patch('launcher.updater.requests.get')
     def test_reject_archive_sha_mismatch(self, mock_get, tmp_path, mock_config):
@@ -321,6 +331,7 @@ class TestDownloadAndExtractSources:
                 mock_config,
                 "v1.0.0",
                 expected_sha256="0" * 64,
+                archive_url=_archive_url(),
             )
 
         assert not (tmp_path / "testapp-v1.0.0").exists()
@@ -347,7 +358,7 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         with pytest.raises(DownloadError):
-            download_and_extract_sources(mock_config, "v1.0.0")
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         assert not (tmp_path / "evil.py").exists()
         assert not (tmp_path / "testapp-v1.0.0").exists()
@@ -369,7 +380,7 @@ class TestDownloadAndExtractSources:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        result = download_and_extract_sources(mock_config, "v1.0.0")
+        result = download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         link = result / "link"
         assert link.is_symlink()
@@ -393,7 +404,7 @@ class TestDownloadAndExtractSources:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        result = download_and_extract_sources(mock_config, "v1.0.0")
+        result = download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         link = result / "pkg" / "link"
         assert link.is_symlink()
@@ -418,7 +429,7 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         with pytest.raises(DownloadError, match="unsafe symlink"):
-            download_and_extract_sources(mock_config, "v1.0.0")
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         assert not (tmp_path / "testapp-v1.0.0").exists()
 
@@ -444,7 +455,7 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         with pytest.raises(DownloadError, match="symlink"):
-            download_and_extract_sources(mock_config, "v1.0.0")
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         assert not (tmp_path / "testapp-v1.0.0").exists()
 
@@ -467,7 +478,7 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         with pytest.raises(DownloadError, match="symlink"):
-            download_and_extract_sources(mock_config, "v1.0.0")
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         assert not (tmp_path / "testapp-v1.0.0").exists()
 
@@ -486,7 +497,7 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         with pytest.raises(DownloadError, match="already exist"):
-            download_and_extract_sources(mock_config, "v1.0.0")
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         assert (existing / "main.py").read_text() == "old"
 
@@ -502,7 +513,21 @@ class TestDownloadAndExtractSources:
         mock_get.return_value = mock_response
 
         with pytest.raises(DownloadError, match="Invalid zip"):
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
+
+    def test_download_requires_archive_url(self, tmp_path, mock_config):
+        """Provider archive endpoints are not used for signed-manifest downloads."""
+        mock_config.path = str(tmp_path)
+
+        with pytest.raises(DownloadError, match="Archive URL is required"):
             download_and_extract_sources(mock_config, "v1.0.0")
+
+    def test_download_invalid_archive_url_is_launcher_error(self, tmp_path, mock_config):
+        """Malformed archive URLs should not escape requests exceptions to callers."""
+        mock_config.path = str(tmp_path)
+
+        with pytest.raises(NetworkError, match="Failed to download"):
+            download_and_extract_sources(mock_config, "v1.0.0", archive_url="not-a-url")
 
 
 class TestSignedManifest:
@@ -524,7 +549,63 @@ class TestSignedManifest:
 
         result = fetch_signed_manifest(config, "v1.0.0")
 
+        assert result.schema_version == 2
+        assert result.archive_name == "testapp-v1.0.0.zip"
+        assert result.archive_url == "https://downloads.example.com/v1.0.0/testapp-v1.0.0.zip"
         assert result.archive_sha256 == hashlib.sha256(archive).hexdigest()
+        assert mock_get.call_args_list[0].args[0] == "https://example.com/v1.0.0/launcher-manifest.yml"
+        assert mock_get.call_args_list[1].args[0] == "https://example.com/v1.0.0/launcher-manifest.yml.sig"
+
+    def test_parse_manifest_rejects_schema_v1(self):
+        manifest = yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "application": "TestApp",
+                "version": "v1.0.0",
+                "archive": {"sha256": "0" * 64},
+            }
+        ).encode("utf-8")
+
+        with pytest.raises(UpdaterError, match="schema_version must be 2"):
+            parse_manifest(manifest, "TestApp", "v1.0.0")
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            (["not", "a", "mapping"], "Manifest must be a mapping"),
+            (
+                {
+                    "schema_version": 2,
+                    "application": "TestApp",
+                    "version": "v1.0.0",
+                    "archive": "not-a-mapping",
+                },
+                "Manifest archive must be a mapping",
+            ),
+        ],
+    )
+    def test_parse_manifest_rejects_non_mapping_data(self, payload, message):
+        manifest = yaml.safe_dump(payload).encode("utf-8")
+
+        with pytest.raises(UpdaterError, match=message):
+            parse_manifest(manifest, "TestApp", "v1.0.0")
+
+    def test_parse_manifest_rejects_invalid_archive_url(self):
+        manifest = yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "application": "TestApp",
+                "version": "v1.0.0",
+                "archive": {
+                    "name": "testapp-v1.0.0.zip",
+                    "url": "not-a-url",
+                    "sha256": "0" * 64,
+                },
+            }
+        ).encode("utf-8")
+
+        with pytest.raises(UpdaterError, match=r"absolute http\(s\) URL"):
+            parse_manifest(manifest, "TestApp", "v1.0.0")
 
     @patch("launcher.updater.requests.get")
     def test_fetch_signed_manifest_rejects_bad_signature(self, mock_get, signed_config):
@@ -557,8 +638,99 @@ class TestSignedManifest:
         with pytest.raises(UpdaterError, match="application"):
             fetch_signed_manifest(config, "v1.0.0")
 
+    @patch("launcher.updater.requests.get")
+    def test_fixed_version_downloads_manifest_archive_url(self, mock_get, tmp_path, signed_config):
+        """Fixed-version updates should download the app archive URL named in the manifest."""
+        config, private_key = signed_config
+        config.path = str(tmp_path)
+        config.auto_update = False
+        config.version = "v1.0.0"
+        archive = _zip_bytes({"root/main.py": "print('hello')"})
+        manifest = _manifest_bytes("TestApp", "v1.0.0", archive)
+        signature = private_key.sign(manifest)
+
+        manifest_response = Mock(content=manifest)
+        manifest_response.raise_for_status = Mock()
+        signature_response = Mock(content=signature)
+        signature_response.raise_for_status = Mock()
+        archive_response = Mock()
+        archive_response.headers = {"content-length": str(len(archive))}
+        archive_response.iter_content = lambda chunk_size: [archive]
+        archive_response.raise_for_status = Mock()
+        mock_get.side_effect = [manifest_response, signature_response, archive_response]
+
+        updated, version = update_sources(config)
+
+        assert updated is True
+        assert version == "v1.0.0"
+        assert (tmp_path / "testapp-v1.0.0" / "main.py").read_text() == "print('hello')"
+        assert mock_get.call_args_list[2].args[0] == "https://downloads.example.com/v1.0.0/testapp-v1.0.0.zip"
+
+    @patch("launcher.updater.requests.get")
+    def test_auto_update_downloads_manifest_archive_url(self, mock_get, tmp_path, signed_config):
+        """Auto-update should download the app archive URL named in the manifest."""
+        config, private_key = signed_config
+        config.path = str(tmp_path)
+        config.auto_update = True
+        config.archive_endpoint = "/provider/archive/{ref}"
+        archive = _zip_bytes({"root/main.py": "print('hello')"})
+        manifest = _manifest_bytes("TestApp", "v2.0.0", archive)
+        signature = private_key.sign(manifest)
+
+        latest_response = Mock()
+        latest_response.json.return_value = {"tag_name": "v2.0.0"}
+        latest_response.raise_for_status = Mock()
+        manifest_response = Mock(content=manifest)
+        manifest_response.raise_for_status = Mock()
+        signature_response = Mock(content=signature)
+        signature_response.raise_for_status = Mock()
+        archive_response = Mock()
+        archive_response.headers = {"content-length": str(len(archive))}
+        archive_response.iter_content = lambda chunk_size: [archive]
+        archive_response.raise_for_status = Mock()
+        mock_get.side_effect = [
+            latest_response,
+            manifest_response,
+            signature_response,
+            archive_response,
+        ]
+
+        updated, version = update_sources(config)
+
+        assert updated is True
+        assert version == "v2.0.0"
+        assert (tmp_path / "testapp-v2.0.0" / "main.py").read_text() == "print('hello')"
+        assert mock_get.call_args_list[3].args[0] == _archive_url("v2.0.0")
+        assert "/provider/archive/" not in mock_get.call_args_list[3].args[0]
+
+    @patch("launcher.updater.requests.get")
+    def test_missing_manifest_archive_asset_has_upload_guidance(self, mock_get, tmp_path, signed_config):
+        """A missing app archive asset should point at the archive named in the manifest."""
+        import requests
+
+        config, _private_key = signed_config
+        config.path = str(tmp_path)
+        archive_response = Mock()
+        archive_response.status_code = 404
+        archive_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "404 Not Found",
+            response=archive_response,
+        )
+        mock_get.return_value = archive_response
+
+        with pytest.raises(HTTPStatusError) as exc_info:
+            download_and_extract_sources(
+                config,
+                "v1.0.0",
+                archive_url="https://downloads.example.com/v1.0.0/testapp-v1.0.0.zip",
+            )
+
+        message = str(exc_info.value)
+        assert "Release archive asset is missing" in message
+        assert "Upload the app archive named in the signed manifest" in message
+
     def test_update_sources_rejects_download_without_trust(self, tmp_path, mock_config):
-        """A missing source download cannot proceed without signed manifest trust."""
+        """A missing app archive download cannot proceed without signed manifest trust."""
         mock_config.path = str(tmp_path)
         mock_config.auto_update = False
         mock_config.version = "v1.0.0"

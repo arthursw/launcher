@@ -132,7 +132,9 @@ def test_launcher_run_subcommand_uses_runtime_launcher(monkeypatch, tmp_path):
             [
                 "name: TestApp",
                 "repository: https://github.com/org/test-app.git",
-                "main: main.py",
+                "entrypoint:",
+                "  mode: script",
+                "  script: main.py",
                 "path: .",
             ]
         )
@@ -167,6 +169,42 @@ def test_launcher_run_subcommand_uses_runtime_launcher(monkeypatch, tmp_path):
 
     assert result == 0
     assert ("worker", config.resolve()) in calls
+
+
+def test_config_check_accepts_valid_config(tmp_path, capsys):
+    """`launcher config check` should validate config without starting the app."""
+    config = tmp_path / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "entrypoint:",
+                "  mode: script",
+                "  script: main.py",
+            ]
+        )
+    )
+
+    result = launcher_main.main(["config", "check", "--config", str(config)])
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert "Configuration OK" in output.out
+    assert str(config.resolve()) in output.out
+
+
+def test_config_check_rejects_invalid_config(tmp_path, capsys):
+    """Config validation errors should be available before build/run."""
+    config = tmp_path / "application.yml"
+    config.write_text("name: MyApp\n")
+
+    result = launcher_main.main(["config", "check", "--config", str(config)])
+
+    output = capsys.readouterr()
+    assert result == 1
+    assert "Error loading configuration" in output.err
+    assert "Required field 'entrypoint'" in output.err
 
 
 def test_delayed_gui_opens_for_early_error():
@@ -205,7 +243,7 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
             "MyApp",
             "--repository",
             "https://github.com/my-org/myapp.git",
-            "--main",
+            "--script",
             "src/myapp/__main__.py",
         ]
     )
@@ -220,13 +258,67 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     text = config.read_text()
     assert "name: MyApp" in text
     assert "repository: https://github.com/my-org/myapp.git" in text
-    assert "main: src/myapp/__main__.py" in text
-    assert 'path: "."' in text
+    assert "entrypoint:" in text
+    assert "  mode: script" in text
+    assert "  script: src/myapp/__main__.py" in text
+    assert "\npath:" not in text
     assert "# Replace this with the public key printed by: launcher release keygen" in text
     assert "public_key: \"<base64-ed25519-public-key>\"" in text
-    assert "# These default URLs match the manifest and signature produced by" in text
+    assert "# These default URLs match the archive, manifest, and signature produced by" in text
     assert "# launcher release sign and uploaded by launcher release upload." in text
     assert "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml" in text
+    assert "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}" in text
+
+
+def test_launcher_init_creates_module_entrypoint(tmp_path, monkeypatch):
+    """`launcher init --mode module` should generate a module entrypoint."""
+    monkeypatch.chdir(tmp_path)
+
+    result = package_main.main(
+        ["init", "--mode", "module", "--module", "my_app", "--arg=--desktop"]
+    )
+
+    text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
+    assert result == 0
+    assert "entrypoint:" in text
+    assert "  mode: module" in text
+    assert "  module: my_app" in text
+    assert "  args:\n    - --desktop" in text
+
+
+def test_launcher_init_creates_project_entrypoint(tmp_path, monkeypatch):
+    """`launcher init --mode project` should generate a project entrypoint."""
+    monkeypatch.chdir(tmp_path)
+
+    result = package_main.main(
+        [
+            "init",
+            "--mode",
+            "project",
+            "--command",
+            "my-app-gui",
+            "--project-directory",
+            "backend",
+        ]
+    )
+
+    text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
+    assert result == 0
+    assert "entrypoint:" in text
+    assert "  mode: project" in text
+    assert "  command: my-app-gui" in text
+    assert "  project_directory: backend" in text
+
+
+def test_init_writes_non_default_path(tmp_path, monkeypatch):
+    """The generated config omits default path but preserves explicit overrides."""
+    monkeypatch.chdir(tmp_path)
+
+    result = launcher_main.main(["init", "--path", "~/Apps/{name}"])
+
+    text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
+    assert result == 0
+    assert 'path: "~/Apps/MyApp"' in text
 
 
 def test_launcher_init_uses_packaged_default_icon_assets(tmp_path, monkeypatch):
@@ -285,6 +377,7 @@ def test_launcher_init_infers_gitlab_release_asset_urls(tmp_path, monkeypatch):
     text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
     assert result == 0
     assert "https://gitlab.com/my-org/myapp/-/releases/{version}/downloads/launcher-manifest.yml" in text
+    assert "https://gitlab.com/my-org/myapp/-/releases/{version}/downloads/{archive_name}" in text
     assert "https://github.com/my-org/myapp" not in text
 
 
@@ -308,6 +401,10 @@ def test_launcher_init_infers_self_hosted_gitlab_release_asset_urls(tmp_path, mo
         "https://gitlab.example.org/my-group/myapp/-/releases/{version}/downloads/"
         "launcher-manifest.yml"
     ) in text
+    assert (
+        "https://gitlab.example.org/my-group/myapp/-/releases/{version}/downloads/"
+        "{archive_name}"
+    ) in text
     assert "https://github.com/my-org/myapp" not in text
 
 
@@ -330,6 +427,10 @@ def test_launcher_init_infers_nested_gitlab_release_asset_urls(tmp_path, monkeyp
     assert (
         "https://gitlab.example.com/group/subgroup/project/-/releases/{version}/downloads/"
         "launcher-manifest.yml"
+    ) in text
+    assert (
+        "https://gitlab.example.com/group/subgroup/project/-/releases/{version}/downloads/"
+        "{archive_name}"
     ) in text
     assert "https://github.com/my-org/project" not in text
 

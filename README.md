@@ -80,17 +80,21 @@ releases, but `.png` can be used.
 Edit `packaging/launcher/application.yml`, then create the signing key:
 
 ```bash
+uv run launcher config check
 uv run launcher release keygen
 ```
 
-This writes `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the
-public key. Replace `trust.public_key` in
-`packaging/launcher/application.yml` with that printed value. Keep the generated
-`manifest_url` and `signature_url` if you will upload
-`launcher-manifest.yml` and `launcher-manifest.yml.sig` as normal release
-assets. If you change `repository` after running `init`, update those two URLs
-too, or rerun `init --force` with the real repository. Edit them manually for
-custom hosting or custom asset names.
+The config starts the app through an `entrypoint`. Use `script` for a Python
+file, `module` for `python -m ...`, or `project` for an installed console
+command.
+
+The `config check` command ensures the configuration is valid.
+The `release keygen` command writes `launcher-signing-key.pem`,
+adds it to `.gitignore`, and prints the public key. Replace `trust.public_key` in
+`packaging/launcher/application.yml` with that printed value.
+Keep the generated `manifest_url`, `signature_url`, and `archive_url` if you will upload the app archive, `launcher-manifest.yml`, and `launcher-manifest.yml.sig` as normal release assets.
+If you change `repository` after running `init`, update those URLs too, or rerun `init --force` with the real repository.
+Edit them manually for custom hosting or custom asset names.
 
 Then build the launcher:
 
@@ -102,9 +106,10 @@ The launcher build is written under `dist/launcher/`. It is separate from app
 release artifacts and only needs to be rebuilt when launcher config, assets, or
 tooling change.
 
-For each app release, put the source archive in `dist/` and run:
+For each app release, build the app-owned release archive into `dist/` and run:
 
 ```bash
+./packaging/launcher/build-release-archive.sh v1.2.3
 uv run launcher release sign
 uv run launcher release verify
 uv run launcher release upload
@@ -115,12 +120,12 @@ write:
 
 ```text
 dist/
+|-- myapp-v1.2.3.zip
 |-- launcher-manifest.yml
 `-- launcher-manifest.yml.sig
 ```
 
-Upload those two files as release assets. `upload` uses the official GitHub or
-GitLab CLI if it is installed and already authenticated.
+Upload publishes all three files as release assets. `upload` uses the official GitHub or GitLab CLI if it is installed and already authenticated.
 
 ## Learn The Pieces
 
