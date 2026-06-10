@@ -33,11 +33,11 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the archive, manifest, and signature produced by
-  # launcher release archive, sign, and upload.
-  manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
-  signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
-  archive_url: "https://github.com/owner/exampleapp/releases/download/{version}/{archive_name}"
+  # With repository set, Launcher infers these GitLab/GitHub release asset URLs.
+  # Uncomment only for custom hosting, custom asset paths, or renamed release assets.
+  # manifest_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml"
+  # signature_url: "https://github.com/owner/exampleapp/releases/download/{version}/launcher-manifest.yml.sig"
+  # archive_url: "https://github.com/owner/exampleapp/releases/download/{version}/{archive_name}"
 
 # No release.archive config is needed when tracked files are enough.
 # For generated assets, uncomment and adjust structured build/include config:

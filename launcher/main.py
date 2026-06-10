@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 
 from launcher.config import load_config
 from launcher.gui.base import BaseGUI
-from launcher.repository import parse_repository_url
+from launcher.repository import default_release_asset_url_templates
 from launcher.worker import EventType, LauncherWorker, create_queues
 
 DEFAULT_CONFIG_NAME = "application.yml"
@@ -375,11 +375,11 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
             "  mode: signed_manifest",
             "  # Replace this with the public key printed by: launcher release keygen",
             '  public_key: "<base64-ed25519-public-key>"',
-            "  # These default URLs match the archive, manifest, and signature produced by",
-            "  # launcher release archive, sign, and upload.",
-            f'  manifest_url: "{manifest_url}"',
-            f'  signature_url: "{signature_url}"',
-            f'  archive_url: "{archive_url}"',
+            "  # With repository set, Launcher infers these GitLab/GitHub release asset URLs.",
+            "  # Uncomment only for custom hosting, custom asset paths, or renamed release assets.",
+            f'  # manifest_url: "{manifest_url}"',
+            f'  # signature_url: "{signature_url}"',
+            f'  # archive_url: "{archive_url}"',
             "",
             "# No release.archive config is needed when tracked files are enough.",
             "# For generated assets, uncomment and adjust structured build/include config:",
@@ -484,21 +484,16 @@ def _repo_name(repository: str) -> str:
 def _release_asset_urls(repository: str) -> tuple[str, str, str]:
     """Infer release asset URLs for generated config when possible."""
     try:
-        repo = parse_repository_url(repository.rstrip("/").removesuffix(".git"))
+        templates = default_release_asset_url_templates(repository)
     except ValueError:
         base = f"https://github.com/my-org/{_repo_name(repository)}/releases/download/{{version}}"
-    else:
-        owner_repo = f"{repo.owner}/{repo.repo}"
-        if "gitlab" in repo.host.lower():
-            base = f"https://{repo.host}/{owner_repo}/-/releases/{{version}}/downloads"
-        else:
-            base = f"https://{repo.host}/{owner_repo}/releases/download/{{version}}"
+        return (
+            f"{base}/launcher-manifest.yml",
+            f"{base}/launcher-manifest.yml.sig",
+            f"{base}/{{archive_name}}",
+        )
 
-    return (
-        f"{base}/launcher-manifest.yml",
-        f"{base}/launcher-manifest.yml.sig",
-        f"{base}/{{archive_name}}",
-    )
+    return templates.manifest_url, templates.signature_url, templates.archive_url
 
 
 if __name__ == "__main__":

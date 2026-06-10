@@ -59,11 +59,11 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by `launcher release keygen`
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the archive, manifest, and signature produced by
-  # `launcher release archive`, `sign`, and `upload`.
-  manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
-  signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
-  archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
+  # With repository set, Launcher infers these GitLab/GitHub release asset URLs.
+  # Uncomment only for custom hosting, custom asset paths, or renamed release assets.
+  # manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
+  # signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
+  # archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
 ```
 
 The default config path is used automatically by `launcher run`,
@@ -158,10 +158,9 @@ public_key: "<base64-ed25519-public-key>"
 with the printed public key. The private key stays outside git and is used later
 by `launcher release sign`.
 
-The generated `manifest_url`, `signature_url`, and `archive_url` point to the release assets that the launcher downloads at runtime.
-The defaults match the files produced by `launcher release archive`, `launcher release sign`, and `launcher release upload`.
-If you change `repository` after running `init`, update those URLs too, or rerun `init --force` with the real repository.
-Edit them only for custom hosting, custom asset paths, or renamed release assets.
+When `repository` is set to a GitHub or GitLab repository, Launcher infers the release asset URLs that it downloads at runtime.
+The inferred defaults match the files produced by `launcher release archive`, `launcher release sign`, and `launcher release upload`.
+Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, renamed release assets, or endpoint-only configs that do not set `repository`.
 `{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the local archive filename written into the signed manifest.
 
 For GitLab, the packaged launcher uses the public GitLab API. If update checks
@@ -271,6 +270,7 @@ release:
         cwd: frontend
     include:
       - frontend/dist
+      # or
       - source: frontend/dist
         destination: my_app/static
 ```
@@ -295,9 +295,26 @@ It cannot be combined with `build` or `include`.
 
 ### 5.3. Build The App Archive
 
+Run release commands from the app directory that contains `packaging/launcher/application.yml`.
+By default, `launcher release archive` uses that config file and writes the archive to `dist/` in the current directory, matching the defaults used later by `launcher release sign`, `verify`, and `upload`.
+
+Create the tag on the commit you are packaging (or fetch the tag from your remote repository), then build the archive:
+
 ```bash
+git tag v1.2.3
 uv run launcher release archive v1.2.3
 ```
+
+For a monorepo where Launcher is configured under an app subdirectory, run the same release commands from that subdirectory:
+
+```bash
+cd backend
+uv run launcher release archive v1.2.3
+uv run launcher release sign
+```
+
+This writes `backend/dist/<archive>.zip`, so `sign` can find it with its default `dist/` lookup.
+Git operations still use the repository root internally, so the archive can contain tracked files from both `frontend/` and `backend/` when the app needs both.
 
 Launcher hashes this exact local archive when it creates the signed manifest.
 Before writing the archive, Launcher verifies that `v1.2.3` resolves to `HEAD` and that tracked files are clean.
@@ -308,7 +325,6 @@ Untracked generated files are allowed so build output can be included without co
 Create and verify the signed Launcher metadata:
 
 ```bash
-uv run launcher release archive v1.2.3
 uv run launcher release sign
 uv run launcher release verify
 ```

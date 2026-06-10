@@ -429,6 +429,60 @@ class TestLoadConfig:
         assert config.trust.mode == "signed_manifest"
         assert config.trust.archive_url == "https://example.com/{version}/{archive_name}"
 
+    def test_load_config_infers_missing_trust_urls_from_repository(self, tmp_path):
+        """Repository-backed trust config should not require repeated release asset URLs."""
+        config_data = {
+            "name": "TestApp",
+            "entrypoint": {"mode": "script", "script": "main.py"},
+            "path": ".",
+            "repository": "git@github.com:owner/repo.git",
+            "trust": {
+                "mode": "signed_manifest",
+                "public_key": "abc",
+            },
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        config = load_config(config_file)
+
+        assert config.trust is not None
+        assert config.trust.manifest_url == "https://github.com/owner/repo/releases/download/{version}/launcher-manifest.yml"
+        assert config.trust.signature_url == "https://github.com/owner/repo/releases/download/{version}/launcher-manifest.yml.sig"
+        assert config.trust.archive_url == "https://github.com/owner/repo/releases/download/{version}/{archive_name}"
+
+    def test_load_config_rejects_missing_trust_urls_without_repository(self, tmp_path):
+        """Custom API configs need explicit signed release asset URLs."""
+        config_data = {
+            "name": "TestApp",
+            "entrypoint": {"mode": "script", "script": "main.py"},
+            "path": ".",
+            "api": "https://updates.example.com",
+            "releases_endpoint": "/releases/latest",
+            "trust": {
+                "mode": "signed_manifest",
+                "public_key": "abc",
+            },
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with pytest.raises(ValueError, match="trust.manifest_url, trust.signature_url, trust.archive_url"):
+            load_config(config_file)
+
+    def test_load_config_rejects_missing_entrypoint_mode(self, tmp_path):
+        """Missing nested entrypoint fields should identify the missing YAML key."""
+        config_data = {
+            "name": "TestApp",
+            "entrypoint": {"script": "main.py"},
+            "repository": "git@github.com:owner/repo.git",
+        }
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with pytest.raises(ValueError, match="entrypoint.mode is required"):
+            load_config(config_file)
+
     def test_load_config_rejects_non_list_extras(self, tmp_path):
         """Dependency extras must be listed explicitly."""
         config_data = {

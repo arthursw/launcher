@@ -70,6 +70,46 @@ def test_archive_release_default_git_archive_writes_dist_zip(tmp_path, monkeypat
     release_cli.validate_release_archive(archive)
 
 
+def test_archive_release_defaults_match_sign_from_app_subdirectory(tmp_path, monkeypatch):
+    """archive should write dist/ beside the config when run from an app subdirectory."""
+    repo = tmp_path / "project"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "dev@example.com")
+    _git(repo, "config", "user.name", "Dev")
+    (repo / "frontend").mkdir()
+    (repo / "frontend" / "package.json").write_text("{}\n")
+    backend = repo / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[project]\nname = \"myapp\"\nversion = \"0.1.0\"\n")
+    (backend / "src").mkdir()
+    (backend / "src" / "myapp.py").write_text("print('hello')\n")
+    app_dir = backend / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text(
+        "name: MyApp\nrepository: https://github.com/my-org/myapp.git\n"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "initial")
+    _git(repo, "tag", "v1.2.3")
+    monkeypatch.chdir(backend)
+
+    archive = release_cli.archive_release("v1.2.3")
+    public_key = release_cli.keygen()
+    release_cli.sign_release()
+    manifest = release_cli.verify_release(public_key=public_key)
+
+    assert archive == Path("dist/myapp-v1.2.3.zip")
+    assert (backend / archive).is_file()
+    assert not (repo / "dist").exists()
+    assert (backend / "dist" / "launcher-manifest.yml").is_file()
+    assert manifest["archive"]["name"] == "myapp-v1.2.3.zip"
+    with zipfile.ZipFile(backend / archive) as zf:
+        names = set(zf.namelist())
+        assert "myapp-v1.2.3/frontend/package.json" in names
+        assert "myapp-v1.2.3/backend/pyproject.toml" in names
+
+
 def test_cli_archive_default_config_is_optional(tmp_path, monkeypatch, capsys):
     """archive should not require launcher config when tracked files are enough."""
     repo = tmp_path / "plain-repo"
@@ -1008,3 +1048,76 @@ def test_upload_missing_provider_cli_explains_install_and_manual_upload(tmp_path
 
     with pytest.raises(release_cli.ReleaseCliError, match="github.com/cli/cli#installation"):
         release_cli.upload_release(public_key=public_key)
+
+
+def test_upload_gitlab_cli_failure_explains_release_prerequisites(tmp_path, monkeypatch):
+    """glab upload failures should explain likely release setup fixes."""
+    monkeypatch.chdir(tmp_path)
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    fake_bin = tmp_path / "bin"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text("#!/bin/sh\necho '404 Not Found.' >&2\nexit 1\n")
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    (app_dir / "application.yml").write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://gitlab.com/my-org/myapp.git",
+            ]
+        )
+    )
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    public_key = release_cli.keygen()
+    release_cli.sign_release()
+
+    with pytest.raises(release_cli.ReleaseCliError) as exc_info:
+        release_cli.upload_release(public_key=public_key)
+
+    message = str(exc_info.value)
+    assert "GitLab release upload failed" in message
+    assert "404 Not Found" in message
+    assert "glab release create v1.2.3" in message
+    assert "git push origin v1.2.3" in message
+    assert "glab auth status" in message
+    assert "Traceback" not in message
+
+
+def test_upload_github_cli_failure_explains_release_prerequisites(tmp_path, monkeypatch):
+    """gh upload failures should explain likely release setup fixes."""
+    monkeypatch.chdir(tmp_path)
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    fake_bin = tmp_path / "bin"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("#!/bin/sh\necho 'HTTP 404: Not Found' >&2\nexit 1\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    (app_dir / "application.yml").write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+            ]
+        )
+    )
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    public_key = release_cli.keygen()
+    release_cli.sign_release()
+
+    with pytest.raises(release_cli.ReleaseCliError) as exc_info:
+        release_cli.upload_release(public_key=public_key)
+
+    message = str(exc_info.value)
+    assert "GitHub release upload failed" in message
+    assert "HTTP 404" in message
+    assert "gh release create v1.2.3" in message
+    assert "git push origin v1.2.3" in message
+    assert "gh auth status" in message

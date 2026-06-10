@@ -2,9 +2,11 @@
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from urllib.parse import quote_plus
 
-from .config import AppConfig
+if TYPE_CHECKING:
+    from .config import AppConfig
 
 
 @dataclass
@@ -17,6 +19,15 @@ class RepositoryInfo:
     api_base: str
     releases_endpoint: str
     archive_endpoint: str  # Contains {ref} placeholder
+
+
+@dataclass
+class ReleaseAssetUrlTemplates:
+    """Default release asset URL templates inferred from a repository."""
+
+    manifest_url: str
+    signature_url: str
+    archive_url: str
 
 
 # SSH pattern: git@github.com:owner/repo.git
@@ -58,6 +69,22 @@ def parse_repository_url(url: str) -> RepositoryInfo:
         return _create_repository_info(host, owner, repo)
 
     raise ValueError(f"Unrecognized repository URL format: {url}")
+
+
+def default_release_asset_url_templates(repository: str) -> ReleaseAssetUrlTemplates:
+    """Infer default signed release asset URLs for normal GitHub/GitLab releases."""
+    repo_info = parse_repository_url(repository)
+    project_path = f"{repo_info.owner}/{repo_info.repo}"
+    if "gitlab" in repo_info.host.lower():
+        base = f"https://{repo_info.host}/{project_path}/-/releases/{{version}}/downloads"
+    else:
+        base = f"https://{repo_info.host}/{project_path}/releases/download/{{version}}"
+
+    return ReleaseAssetUrlTemplates(
+        manifest_url=f"{base}/launcher-manifest.yml",
+        signature_url=f"{base}/launcher-manifest.yml.sig",
+        archive_url=f"{base}/{{archive_name}}",
+    )
 
 
 def _split_repository_path(path: str) -> tuple[str, str]:
@@ -141,7 +168,7 @@ def _gitlab_endpoints(host: str, owner: str, repo: str, project_id: str | None =
     )
 
 
-def get_api_endpoints(config: AppConfig) -> tuple[str, str, str]:
+def get_api_endpoints(config: "AppConfig") -> tuple[str, str, str]:
     """Get API endpoints from config, inferring from repository URL if needed.
 
     Args:

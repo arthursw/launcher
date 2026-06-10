@@ -68,6 +68,37 @@ def test_build_plan_validates_full_launcher_config(tmp_path):
     assert "Required field 'entrypoint'" in message
 
 
+def test_build_reports_missing_custom_trust_urls_without_traceback(tmp_path, capsys):
+    """Build should explain endpoint-only trust config instead of leaking TypeError."""
+    config = tmp_path / "packaging" / "launcher" / "application.yml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "api: https://updates.example.com",
+                "releases_endpoint: /releases/latest",
+                "entrypoint:",
+                "  mode: script",
+                "  script: main.py",
+                "trust:",
+                "  mode: signed_manifest",
+                "  public_key: abc",
+            ]
+        )
+    )
+
+    result = build_cli.main(["--config", str(config), "--spec-only"])
+
+    output = capsys.readouterr()
+    assert result == 1
+    assert "Invalid config" in output.err
+    assert "trust.manifest_url, trust.signature_url, trust.archive_url" in output.err
+    assert "Set repository to a GitHub/GitLab URL" in output.err
+    assert "Traceback" not in output.err
+    assert "TypeError" not in output.err
+
+
 def test_build_plan_allows_omitted_path(tmp_path):
     """path is optional and defaults to portable per-app runtime data."""
     config = write_config(tmp_path)

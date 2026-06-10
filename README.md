@@ -92,9 +92,8 @@ The `config check` command ensures the configuration is valid.
 The `release keygen` command writes `launcher-signing-key.pem`,
 adds it to `.gitignore`, and prints the public key. Replace `trust.public_key` in
 `packaging/launcher/application.yml` with that printed value.
-Keep the generated `manifest_url`, `signature_url`, and `archive_url` if you will upload the app archive, `launcher-manifest.yml`, and `launcher-manifest.yml.sig` as normal release assets.
-If you change `repository` after running `init`, update those URLs too, or rerun `init --force` with the real repository.
-Edit them manually for custom hosting or custom asset names.
+When `repository` is set, Launcher infers the normal GitHub/GitLab release asset URLs for the app archive, `launcher-manifest.yml`, and `launcher-manifest.yml.sig`.
+Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, or endpoint-only configs that do not set `repository`.
 
 Then build the launcher:
 

@@ -2,11 +2,13 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Optional, Union
 
 import yaml
 
 from .paths import get_runtime_data_dir
+from .repository import default_release_asset_url_templates
 
 VALID_CERT_EXTENSIONS = (".pem", ".crt", ".cer")
 ENTRYPOINT_MODES = {"script", "module", "project"}
@@ -69,9 +71,9 @@ class TrustConfig:
 
     mode: str
     public_key: str
-    manifest_url: str
-    signature_url: str
-    archive_url: str
+    manifest_url: Optional[str] = None
+    signature_url: Optional[str] = None
+    archive_url: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate trust configuration."""
@@ -79,12 +81,6 @@ class TrustConfig:
             raise ValueError("trust.mode must be 'signed_manifest'")
         if not self.public_key:
             raise ValueError("trust.public_key is required")
-        if not self.manifest_url:
-            raise ValueError("trust.manifest_url is required")
-        if not self.signature_url:
-            raise ValueError("trust.signature_url is required")
-        if not self.archive_url:
-            raise ValueError("trust.archive_url is required")
 
 
 @dataclass
@@ -391,6 +387,71 @@ def sanitize_version_for_path(version: str) -> str:
     return sanitized
 
 
+def _config_type_error(section: str, error: TypeError) -> ValueError:
+    message = str(error)
+    missing_fields = re.findall(r"'([^']+)'", message)
+    if "missing" in message and "required positional argument" in message and missing_fields:
+        if len(missing_fields) == 1:
+            return ValueError(f"{section}.{missing_fields[0]} is required")
+        fields = ", ".join(f"{section}.{field}" for field in missing_fields)
+        return ValueError(f"Required fields are missing from {section}: {fields}")
+
+    unexpected = re.search(r"unexpected keyword argument '([^']+)'", message)
+    if unexpected:
+        return ValueError(f"Unknown field in {section}: {unexpected.group(1)}")
+
+    return ValueError(f"Invalid {section} configuration: {message}")
+
+
+def _load_entrypoint_config(data: dict[str, Any]) -> EntryPointConfig:
+    try:
+        return EntryPointConfig(**data)
+    except TypeError as e:
+        raise _config_type_error("entrypoint", e) from e
+
+
+def _load_trust_config(data: Any) -> TrustConfig:
+    if not isinstance(data, dict):
+        raise ValueError("'trust' must be a mapping")
+    try:
+        return TrustConfig(**data)
+    except TypeError as e:
+        raise _config_type_error("trust", e) from e
+
+
+def _resolve_trust_urls(config: AppConfig) -> None:
+    if not config.trust:
+        return
+
+    missing = [
+        field_name
+        for field_name in ("manifest_url", "signature_url", "archive_url")
+        if not getattr(config.trust, field_name)
+    ]
+    if not missing:
+        return
+
+    if not config.repository:
+        formatted = ", ".join(f"trust.{field_name}" for field_name in missing)
+        raise ValueError(
+            f"{formatted} required when trust is configured without repository inference. "
+            "Set repository to a GitHub/GitLab URL, or configure explicit trust.manifest_url, "
+            "trust.signature_url, and trust.archive_url for custom hosting."
+        )
+
+    try:
+        defaults = default_release_asset_url_templates(config.repository)
+    except ValueError as e:
+        formatted = ", ".join(f"trust.{field_name}" for field_name in missing)
+        raise ValueError(
+            f"{formatted} could not be inferred from repository {config.repository!r}. "
+            "Configure explicit trust.manifest_url, trust.signature_url, and trust.archive_url."
+        ) from e
+
+    for field_name in missing:
+        setattr(config.trust, field_name, getattr(defaults, field_name))
+
+
 def load_config(config_path: Path) -> AppConfig:
     """Load application configuration from a YAML file.
 
@@ -432,12 +493,12 @@ def load_config(config_path: Path) -> AppConfig:
     )
 
     trust_data = data.pop("trust", None)
-    trust = TrustConfig(**trust_data) if trust_data else None
+    trust = _load_trust_config(trust_data) if trust_data else None
 
     # Create config instance
     config = AppConfig(
         name=data["name"],
-        entrypoint=EntryPointConfig(**data["entrypoint"]),
+        entrypoint=_load_entrypoint_config(data["entrypoint"]),
         path=data.get("path") or ".",
         repository=data.get("repository"),
         gitlab_project_id=data.get("gitlab_project_id"),
@@ -461,5 +522,6 @@ def load_config(config_path: Path) -> AppConfig:
 
     # Store the config path for saving
     config._config_path = config_path
+    _resolve_trust_urls(config)
 
     return config

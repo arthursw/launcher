@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import shlex
 import sys
 import re
 import shutil
@@ -103,7 +104,8 @@ def archive_release(
 ) -> Path:
     """Build the app archive consumed by release sign, verify, and upload."""
     repo_root = git_repo_root()
-    release_config = load_release_config_for_archive(config_path, repo_root)
+    invocation_dir = Path.cwd().resolve()
+    release_config = load_release_config_for_archive(config_path)
     archive_config = load_release_archive_config(release_config.path, repo_root)
 
     ref_commit = git_commit_for_ref(version, repo_root)
@@ -121,6 +123,7 @@ def archive_release(
         version=version,
         release_config=release_config,
         repo_root=repo_root,
+        invocation_dir=invocation_dir,
     )
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     if archive_path.exists():
@@ -154,9 +157,9 @@ def archive_release(
     return display_path(archive_path)
 
 
-def load_release_config_for_archive(config_path: Path | None, repo_root: Path) -> ReleaseConfig:
+def load_release_config_for_archive(config_path: Path | None) -> ReleaseConfig:
     """Load release config using archive command path rules."""
-    resolved = resolve_archive_config_path(config_path, repo_root)
+    resolved = resolve_config_path(config_path)
     if not resolved:
         return ReleaseConfig()
 
@@ -458,8 +461,55 @@ def upload_release(
     if dry_run:
         return [command]
 
-    subprocess.run(command, check=True)
+    run_upload_command(command, provider=provider, version=version, repository=repository)
     return [command]
+
+
+def run_upload_command(command: list[str], *, provider: str, version: str, repository: str | None) -> None:
+    """Run a provider upload command and turn provider failures into actionable errors."""
+    try:
+        subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        raise ReleaseCliError(format_upload_command_error(e, provider, version, repository, command)) from e
+
+
+def format_upload_command_error(
+    error: subprocess.CalledProcessError,
+    provider: str,
+    version: str,
+    repository: str | None,
+    command: list[str],
+) -> str:
+    provider_name = "GitHub" if provider == "github" else "GitLab"
+    output = "\n".join(part for part in (error.stdout, error.stderr) if part).strip()
+    command_text = " ".join(shlex.quote(part) for part in command)
+    output_section = f"\n\nProvider output:\n{output}" if output else ""
+    repository_hint = f"\n  - Check that repository is correct: {repository}" if repository else ""
+
+    if provider == "github":
+        fixes = (
+            f"  - Push the release tag if it is not on GitHub yet: git push origin {version}\n"
+            f"  - Create the GitHub release before uploading assets: gh release create {version} --generate-notes\n"
+            "  - Check GitHub CLI authentication and repository access: gh auth status\n"
+            "  - If the release already exists, verify that the configured repository points to the expected GitHub project."
+        )
+    else:
+        fixes = (
+            f"  - Push the release tag if it is not on GitLab yet: git push origin {version}\n"
+            "  - Create the GitLab release before uploading assets: "
+            f"glab release create {version} --notes \"Release {version}\"\n"
+            "  - Check GitLab CLI authentication, hostname, and repository access: glab auth status\n"
+            "  - If the release already exists, verify that the configured repository points to the expected GitLab project."
+        )
+
+    return (
+        f"{provider_name} release upload failed with exit code {error.returncode}.\n\n"
+        f"Command:\n  {command_text}"
+        f"{output_section}\n\n"
+        "Likely fixes:\n"
+        f"{fixes}"
+        f"{repository_hint}"
+    )
 
 
 def load_release_config(config_path: Path | None) -> ReleaseConfig:
@@ -494,20 +544,6 @@ def resolve_config_path(config_path: Path | None) -> Path | None:
         return DEFAULT_CONFIG_PATH
 
     return None
-
-
-def resolve_archive_config_path(config_path: Path | None, repo_root: Path) -> Path | None:
-    """Resolve config paths for archive creation relative to the git root."""
-    if config_path:
-        path = config_path.expanduser()
-        if not path.is_absolute():
-            path = repo_root / path
-        if not path.exists():
-            raise ReleaseCliError(f"Config file not found: {display_path(path)}")
-        return path
-
-    path = repo_root / DEFAULT_CONFIG_PATH
-    return path if path.exists() else None
 
 
 def git_repo_root() -> Path:
@@ -570,16 +606,17 @@ def resolve_release_archive_path(
     version: str,
     release_config: ReleaseConfig,
     repo_root: Path,
+    invocation_dir: Path,
 ) -> Path:
     if archive:
         archive_path = archive.expanduser()
         if not archive_path.is_absolute():
-            archive_path = repo_root / archive_path
+            archive_path = invocation_dir / archive_path
         return archive_path
 
     out_path = out_dir.expanduser()
     if not out_path.is_absolute():
-        out_path = repo_root / out_path
+        out_path = invocation_dir / out_path
     return out_path / f"{release_archive_basename(release_config, repo_root)}-{version}.zip"
 
 

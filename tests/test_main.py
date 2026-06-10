@@ -266,10 +266,10 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     assert "\npath:" not in text
     assert "# Replace this with the public key printed by: launcher release keygen" in text
     assert "public_key: \"<base64-ed25519-public-key>\"" in text
-    assert "# These default URLs match the archive, manifest, and signature produced by" in text
-    assert "# launcher release archive, sign, and upload." in text
-    assert "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml" in text
-    assert "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}" in text
+    assert "# With repository set, Launcher infers these GitLab/GitHub release asset URLs." in text
+    assert "# Uncomment only for custom hosting, custom asset paths, or renamed release assets." in text
+    assert '# manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"' in text
+    assert '# archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"' in text
     assert "# No release.archive config is needed when tracked files are enough." in text
     assert "# release:" in text
     assert "#   archive:" in text
@@ -388,6 +388,12 @@ def test_launcher_init_infers_gitlab_release_asset_urls(tmp_path, monkeypatch):
 
     text = (tmp_path / "packaging" / "launcher" / "application.yml").read_text()
     assert result == 0
+    assert "With repository set, Launcher infers these GitLab/GitHub release asset URLs." in text
+    assert "# Uncomment only for custom hosting, custom asset paths, or renamed release assets." in text
+    assert (
+        '# manifest_url: "https://gitlab.com/my-org/myapp/-/releases/{version}/downloads/'
+        'launcher-manifest.yml"'
+    ) in text
     assert "https://gitlab.com/my-org/myapp/-/releases/{version}/downloads/launcher-manifest.yml" in text
     assert "https://gitlab.com/my-org/myapp/-/releases/{version}/downloads/{archive_name}" in text
     assert "https://github.com/my-org/myapp" not in text

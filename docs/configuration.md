@@ -27,11 +27,11 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the archive, manifest, and signature produced by
-  # launcher release archive, sign, and upload.
-  manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
-  signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
-  archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
+  # With repository set, Launcher infers these GitLab/GitHub release asset URLs.
+  # Uncomment only for custom hosting, custom asset paths, or renamed release assets.
+  # manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
+  # signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
+  # archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
 
 # No release.archive config is needed when tracked files are enough.
 # For generated assets, uncomment and adjust structured build/include config:
@@ -182,22 +182,21 @@ trust:
   mode: signed_manifest
   # Replace this with the public key printed by: launcher release keygen
   public_key: "<base64-ed25519-public-key>"
-  # These default URLs match the archive, manifest, and signature produced by
-  # launcher release archive, sign, and upload.
-  manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
-  signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
-  archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
+  # With repository set, Launcher infers these GitLab/GitHub release asset URLs.
+  # Uncomment only for custom hosting, custom asset paths, or renamed release assets.
+  # manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
+  # signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
+  # archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
 ```
 
 This is required because Launcher downloads Python code and runs it. See
 [security.md](security.md) for the explanation.
 
-`manifest_url`, `signature_url`, and `archive_url` are the runtime release asset URL templates.
-`manifest_url` and `signature_url` fetch `launcher-manifest.yml` and `launcher-manifest.yml.sig`.
-`archive_url` is used by `launcher release sign` to write the exact app archive URL into the signed manifest.
+When `repository` is set to a GitHub or GitLab repository, Launcher infers the default runtime release asset URL templates.
+Those defaults point to `launcher-manifest.yml`, `launcher-manifest.yml.sig`, and the versioned archive uploaded by `launcher release upload`.
+`launcher release sign` uses the inferred archive URL to write the exact app archive URL into the signed manifest.
 At runtime, Launcher downloads `archive.url` from the verified manifest and checks its SHA-256 hash before extraction.
-If you change `repository` after running `launcher init`, update these URLs too, or rerun `launcher init --force` with the real repository.
-Edit them manually for custom hosting, custom asset paths, or renamed files.
+Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, renamed files, or endpoint-only configs that do not set `repository`.
 `{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the archive filename in `dist/`.
 
 ## Release Archive Fields
