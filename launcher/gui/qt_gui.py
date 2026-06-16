@@ -1,7 +1,7 @@
 """Qt (PySide6) GUI implementation for the launcher."""
 
 import queue
-from typing import Optional
+from typing import Optional, cast
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -76,7 +76,9 @@ class ProxyDialog(QDialog):
         layout.addWidget(hint)
 
         # Buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -175,7 +177,7 @@ class QtGUI(BaseGUI):
         if QApplication.instance() is None:
             self._app = QApplication([])
         else:
-            self._app = QApplication.instance()
+            self._app = cast(QApplication, QApplication.instance())
 
         # Main window
         self._window = QMainWindow()
@@ -240,7 +242,7 @@ class QtGUI(BaseGUI):
             return
 
         dialog = ProxyDialog(self._window)
-        if dialog.exec() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self._submit_proxy_response(
                 request_id,
                 dialog.http_proxy,

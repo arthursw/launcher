@@ -53,8 +53,12 @@ def test_keychain_failure_falls_back_to_session_only(tmp_path, monkeypatch):
     state.remember_proxy_settings(proxy, remember_password=True)
     reloaded = LauncherState.load("TestApp", state_path)
 
-    assert state.proxy_settings().http == proxy.http
-    assert reloaded.proxy_settings().http == "http://alice@proxy.example.com:8080"
+    state_proxy = state.proxy_settings()
+    reloaded_proxy = reloaded.proxy_settings()
+    assert state_proxy is not None
+    assert reloaded_proxy is not None
+    assert state_proxy.http == proxy.http
+    assert reloaded_proxy.http == "http://alice@proxy.example.com:8080"
 
 
 def test_remembered_proxy_password_loads_from_keychain(tmp_path, monkeypatch):
@@ -79,8 +83,10 @@ def test_remembered_proxy_password_loads_from_keychain(tmp_path, monkeypatch):
 
     reloaded = LauncherState.load("TestApp", state_path)
 
+    reloaded_proxy = reloaded.proxy_settings()
+    assert reloaded_proxy is not None
     assert "secret" not in state_path.read_text()
-    assert reloaded.proxy_settings().http == "http://alice:secret@proxy.example.com:8080"
+    assert reloaded_proxy.http == "http://alice:secret@proxy.example.com:8080"
 
 
 def test_default_state_paths(monkeypatch, tmp_path):

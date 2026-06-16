@@ -1,6 +1,14 @@
 """GUI modules for the launcher application."""
 
+from typing import TYPE_CHECKING
+
 from .base import BaseGUI
+
+if TYPE_CHECKING:
+    from .console_gui import ConsoleGUI
+    from .qt_gui import QtGUI
+    from .textual_gui import TextualGUI
+    from .tkinter_gui import TkinterGUI
 
 __all__ = ["BaseGUI", "TkinterGUI", "QtGUI", "TextualGUI", "ConsoleGUI"]
 

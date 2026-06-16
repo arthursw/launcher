@@ -171,7 +171,7 @@ class LauncherApp(App):
             if event.total > 0:
                 progress_bar.update(total=event.total, progress=event.current)
             else:
-                progress_bar.update(total=100, progress=None)  # Indeterminate
+                progress_bar.update(total=None)  # Indeterminate
         elif event.type == EventType.PROXY_REQUIRED:
             self._current_request_id = event.request_id
             self.push_screen(ProxyScreen(), self._on_proxy_result)
@@ -190,10 +190,11 @@ class LauncherApp(App):
             self.query_one("#log", RichLog).write("[green]Launcher complete. Application is running.[/green]")
             self.query_one("#close", Button).disabled = False
 
-    def _on_proxy_result(self, result: tuple[Optional[str], Optional[str], Optional[str], bool]) -> None:
+    def _on_proxy_result(self, result: tuple[Optional[str], Optional[str], Optional[str], bool] | None) -> None:
         """Handle proxy dialog result."""
         from ..worker import GUIResponse, ResponseType
 
+        result = result or (None, None, None, False)
         http, https, ssl_cert, remember = result
         response = GUIResponse(
             type=ResponseType.PROXY_SETTINGS,
@@ -207,14 +208,14 @@ class LauncherApp(App):
         )
         self.response_queue.put(response)
 
-    def _on_timeout_result(self, action: str) -> None:
+    def _on_timeout_result(self, action: str | None) -> None:
         """Handle timeout dialog result."""
         from ..worker import GUIResponse, ResponseType
 
         response = GUIResponse(
             type=ResponseType.INIT_TIMEOUT_RESPONSE,
             request_id=self._current_request_id or "",
-            data={"action": action},
+            data={"action": action or "exit"},
         )
         self.response_queue.put(response)
 

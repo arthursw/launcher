@@ -252,7 +252,7 @@ class LauncherWorker:
         if self._env_manager:
             self._env_manager.exit()
 
-    def _run(self) -> None:
+    def _run(self) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         """Main worker loop."""
         try:
             # Load configuration

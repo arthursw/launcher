@@ -1,0 +1,14 @@
+{
+  "include": [
+    "launcher",
+    "main.py",
+    "tests"
+  ],
+  "exclude": [
+    ".venv",
+    ".worktrees",
+    "build",
+    "dist",
+    "wetlands"
+  ]
+}

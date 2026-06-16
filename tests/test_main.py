@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 import queue
+from typing import Any, cast
 
 import main as launcher_main
 from launcher import release_cli
@@ -227,7 +228,12 @@ def test_delayed_gui_opens_for_early_error():
         def run(self):
             calls.append("gui")
 
-    package_main.run_with_delayed_gui(FakeWorker(), FakeGui(), gui_timeout=30, event_queue=event_queue)
+    package_main.run_with_delayed_gui(
+        cast(Any, FakeWorker()),
+        cast(Any, FakeGui()),
+        gui_timeout=30,
+        event_queue=event_queue,
+    )
 
     assert calls == ["gui"]
 

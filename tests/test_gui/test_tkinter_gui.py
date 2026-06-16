@@ -1,6 +1,7 @@
 """Tests for the Tkinter GUI implementation."""
 
 import queue
+from typing import Any, cast
 
 from launcher.gui.tkinter_gui import TkinterGUI
 
@@ -13,6 +14,6 @@ def test_process_events_handles_root_destroyed_during_update():
         def update(self):
             gui._root = None
 
-    gui._root = RootDestroyedDuringUpdate()
+    gui._root = cast(Any, RootDestroyedDuringUpdate())
 
     assert gui._process_events_once() is False

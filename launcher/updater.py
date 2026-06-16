@@ -137,8 +137,12 @@ def fetch_signed_manifest(
     if not config.trust:
         raise UpdaterError("Signed manifest trust configuration is required for updates")
 
-    manifest_url = config.trust.manifest_url.format(version=version)
-    signature_url = config.trust.signature_url.format(version=version)
+    trust = config.trust
+    if not trust.manifest_url or not trust.signature_url:
+        raise UpdaterError("Signed manifest URLs are required for updates")
+
+    manifest_url = trust.manifest_url.format(version=version)
+    signature_url = trust.signature_url.format(version=version)
     manifest_bytes = _download_bytes(manifest_url, proxy_settings, timeout, asset_kind="manifest")
     signature_bytes = _download_bytes(signature_url, proxy_settings, timeout, asset_kind="signature")
     _verify_ed25519_signature(config.trust.public_key, signature_bytes, manifest_bytes)
@@ -411,6 +415,8 @@ def _extract_zip_members(
         if member.kind != "symlink":
             continue
 
+        if member.symlink_target is None:
+            raise DownloadError(f"Invalid symlink target: {'/'.join(member.parts)}")
         target = destination.joinpath(*member.parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(member.symlink_target)
