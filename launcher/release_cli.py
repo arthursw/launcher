@@ -76,6 +76,20 @@ class ReleaseArchiveConfig:
     custom_script: Path | None = None
 
 
+@dataclass(frozen=True)
+class ReleaseUploadPlan:
+    """Verified release assets and provider command for one upload."""
+
+    application: str
+    version: str
+    provider: str
+    repository: str | None
+    command: list[str]
+    archive: Path
+    manifest_path: Path
+    signature_path: Path
+
+
 def keygen(private_key_path: Path = DEFAULT_PRIVATE_KEY, force: bool = False) -> str:
     """Generate an Ed25519 private key and return the base64 public key."""
     private_key_path = private_key_path.expanduser()
@@ -401,6 +415,33 @@ def upload_release(
     Returns:
         Commands that were run, or would be run in dry-run mode.
     """
+    plan = plan_upload_release(
+        manifest_path=manifest_path,
+        signature_path=signature_path,
+        archive=archive,
+        public_key=public_key,
+        out_dir=out_dir,
+        config_path=config_path,
+        repository=repository,
+    )
+    if dry_run:
+        return [plan.command]
+
+    run_upload_command(plan.command, provider=plan.provider, version=plan.version, repository=plan.repository)
+    return [plan.command]
+
+
+def plan_upload_release(
+    *,
+    manifest_path: Path | None = None,
+    signature_path: Path | None = None,
+    archive: Path | None = None,
+    public_key: str | None = None,
+    out_dir: Path = DEFAULT_DIST_DIR,
+    config_path: Path | None = None,
+    repository: str | None = None,
+) -> ReleaseUploadPlan:
+    """Verify release assets and build the provider upload command."""
     manifest = verify_release(
         manifest_path=manifest_path,
         signature_path=signature_path,
@@ -458,19 +499,25 @@ def upload_release(
             "--use-package-registry",
         ]
 
-    if dry_run:
-        return [command]
+    return ReleaseUploadPlan(
+        application=manifest["application"],
+        version=version,
+        provider=provider,
+        repository=repository,
+        command=command,
+        archive=archive,
+        manifest_path=manifest_path,
+        signature_path=signature_path,
+    )
 
-    run_upload_command(command, provider=provider, version=version, repository=repository)
-    return [command]
 
-
-def run_upload_command(command: list[str], *, provider: str, version: str, repository: str | None) -> None:
+def run_upload_command(command: list[str], *, provider: str, version: str, repository: str | None) -> str:
     """Run a provider upload command and turn provider failures into actionable errors."""
     try:
-        subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         raise ReleaseCliError(format_upload_command_error(e, provider, version, repository, command)) from e
+    return combine_process_output(result.stdout, result.stderr)
 
 
 def format_upload_command_error(
@@ -481,10 +528,20 @@ def format_upload_command_error(
     command: list[str],
 ) -> str:
     provider_name = "GitHub" if provider == "github" else "GitLab"
-    output = "\n".join(part for part in (error.stdout, error.stderr) if part).strip()
-    command_text = " ".join(shlex.quote(part) for part in command)
+    output = combine_process_output(error.stdout, error.stderr)
+    command_text = format_shell_command(command)
     output_section = f"\n\nProvider output:\n{output}" if output else ""
     repository_hint = f"\n  - Check that repository is correct: {repository}" if repository else ""
+    duplicate_hint = ""
+    if provider == "gitlab" and is_duplicate_gitlab_release_asset_error(output):
+        duplicate_hint = (
+            "\n\nGitLab reports that one or more release assets already exist. "
+            "A previous upload may have succeeded.\n"
+            "Next steps:\n"
+            "  - Open the GitLab release and verify the archive, manifest, and signature assets are present.\n"
+            "  - Delete or replace the existing GitLab release assets before retrying the same version.\n"
+            "  - Use a new release version when publishing different contents."
+        )
 
     if provider == "github":
         fixes = (
@@ -505,10 +562,42 @@ def format_upload_command_error(
     return (
         f"{provider_name} release upload failed with exit code {error.returncode}.\n\n"
         f"Command:\n  {command_text}"
-        f"{output_section}\n\n"
+        f"{output_section}"
+        f"{duplicate_hint}\n\n"
         "Likely fixes:\n"
         f"{fixes}"
         f"{repository_hint}"
+    )
+
+
+def combine_process_output(stdout: str | None, stderr: str | None) -> str:
+    """Return provider output in the same stdout-then-stderr order used in errors."""
+    return "\n".join(part for part in (stdout, stderr) if part).strip()
+
+
+def format_shell_command(command: Sequence[str]) -> str:
+    """Render a command for copy/paste-friendly CLI output."""
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def release_provider_name(provider: str) -> str:
+    """Return a human-readable release provider name."""
+    return "GitHub" if provider == "github" else "GitLab"
+
+
+def print_upload_assets(plan: ReleaseUploadPlan) -> None:
+    """Print the verified release assets included in an upload command."""
+    print("Assets:")
+    print(f"  Archive: {plan.archive}")
+    print(f"  Manifest: {plan.manifest_path}")
+    print(f"  Signature: {plan.signature_path}")
+
+
+def is_duplicate_gitlab_release_asset_error(output: str) -> bool:
+    """Return True when GitLab reports existing release asset links."""
+    lowered = output.lower()
+    return "already been taken" in lowered and any(
+        field in lowered for field in ("url", "name", "filepath")
     )
 
 
@@ -955,22 +1044,23 @@ def _is_archive(path: Path) -> bool:
     return path.is_file() and any(path.name.endswith(suffix) for suffix in ARCHIVE_SUFFIXES)
 
 
-def _add_to_gitignore(path: Path) -> None:
+def _add_to_gitignore(path: Path) -> bool:
     """Add the generated private-key path to .gitignore when possible."""
     gitignore = Path(".gitignore")
     try:
         relative_path = path.resolve().relative_to(Path.cwd().resolve())
     except ValueError:
-        return
+        return False
 
     entry = relative_path.as_posix()
     existing = gitignore.read_text().splitlines() if gitignore.exists() else []
     if entry in existing:
-        return
+        return True
 
     prefix = "\n" if existing and existing[-1] else ""
     with gitignore.open("a") as f:
         f.write(f"{prefix}\n# Launcher signing keys\n{entry}\n")
+    return True
 
 
 def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
@@ -1029,8 +1119,13 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
     try:
         if args.command == "keygen":
             public_key = keygen(args.private_key, force=args.force)
-            print(f"Private key written to: {args.private_key}")
-            print("The private key path was added to .gitignore.")
+            private_key_path = args.private_key.expanduser()
+            print(f"Private key written to: {display_path(private_key_path)}")
+            if _add_to_gitignore(private_key_path):
+                print(f"Private key ignored by git: {display_path(private_key_path)}")
+            else:
+                print("Private key is outside the current directory, so .gitignore was not changed.")
+                print("Keep this private key secret and out of source control.")
             print()
             print("Add this public key to your app config:")
             print("trust:")
@@ -1076,7 +1171,7 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
             return 0
 
         if args.command == "upload":
-            commands = upload_release(
+            plan = plan_upload_release(
                 manifest_path=args.manifest,
                 signature_path=args.signature,
                 archive=args.archive,
@@ -1084,10 +1179,36 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
                 out_dir=args.out,
                 config_path=args.config,
                 repository=args.repository,
-                dry_run=args.dry_run,
             )
-            for command in commands:
-                print(" ".join(command))
+            provider_name = release_provider_name(plan.provider)
+            if args.dry_run:
+                print(f"Dry run: verified {plan.application} {plan.version} release assets.")
+                print("No files were uploaded.")
+                destination = plan.repository or "configured repository"
+                print(f"Would upload to {provider_name}: {destination}")
+                print_upload_assets(plan)
+                print("Command:")
+                print(f"  {format_shell_command(plan.command)}")
+                return 0
+
+            print(f"Uploading {plan.application} {plan.version} release assets to {provider_name}.")
+            if plan.repository:
+                print(f"Repository: {plan.repository}")
+            print_upload_assets(plan)
+            print("Command:")
+            print(f"  {format_shell_command(plan.command)}")
+            provider_output = run_upload_command(
+                plan.command,
+                provider=plan.provider,
+                version=plan.version,
+                repository=plan.repository,
+            )
+            if provider_output:
+                print()
+                print("Provider output:")
+                print(provider_output)
+            print()
+            print(f"Upload complete: {plan.application} {plan.version} release assets are published.")
             return 0
     except ReleaseCliError as e:
         parser.exit(1, f"Error: {e}\n")

@@ -108,7 +108,7 @@ def test_build_plan_allows_omitted_path(tmp_path):
     assert plan.app_name == "MyApp"
 
 
-def test_build_spec_only_writes_generated_spec(tmp_path, monkeypatch):
+def test_build_spec_only_writes_generated_spec(tmp_path, monkeypatch, capsys):
     """Spec-only mode should write a PyInstaller spec without running PyInstaller."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(build_cli.platform, "system", lambda: "Linux")
@@ -132,6 +132,10 @@ def test_build_spec_only_writes_generated_spec(tmp_path, monkeypatch):
     assert str(icon.resolve()) in text
     assert f"icon={str(icon.resolve())!r}" in text
     assert "dist/launcher" in text
+    output = capsys.readouterr()
+    assert "Spec-only mode: generated build files without running PyInstaller." in output.out
+    assert "Launcher build spec:" in output.out
+    assert "Launcher build output:" in output.out
 
 
 def test_build_plan_allows_explicit_config_and_spec(tmp_path):
@@ -226,3 +230,40 @@ def test_run_pyinstaller_uses_clean_noninteractive_build(tmp_path, monkeypatch):
     assert "--distpath" in command
     assert "--workpath" in command
     assert command[-1] == plan.spec_path.as_posix()
+
+
+def test_build_prints_running_and_complete_messages(tmp_path, monkeypatch, capsys):
+    """Real builds should clearly say that PyInstaller ran and where output lives."""
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path)
+    monkeypatch.setattr(build_cli, "run_pyinstaller", lambda plan: None)
+
+    result = build_cli.main([])
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert "Running PyInstaller..." in output.out
+    assert "Build complete: packaged launcher files are in" in output.out
+    assert "Launcher build spec:" in output.out
+    assert "Launcher build output:" in output.out
+
+
+def test_build_reports_pyinstaller_failure_with_command(tmp_path, monkeypatch, capsys):
+    """PyInstaller failures should include the failing command without a traceback."""
+    config = write_config(tmp_path)
+    plan = build_cli.create_build_plan(config_path=config)
+
+    def fail(command, check):
+        raise build_cli.subprocess.CalledProcessError(7, command)
+
+    monkeypatch.setattr(build_cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(build_cli.subprocess, "run", fail)
+
+    result = build_cli.main(["--config", str(config)])
+
+    output = capsys.readouterr()
+    assert result == 1
+    assert "PyInstaller failed with exit code 7." in output.err
+    assert "Command:" in output.err
+    assert str(plan.spec_path) in output.err
+    assert "Traceback" not in output.err

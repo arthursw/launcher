@@ -383,3 +383,34 @@
   - `git diff --check`
   - Review-agent findings addressed for optional default config, symlink include source escapes, and docs clarity.
 - Next: merge the verified release archive implementation back to the main worktree.
+
+## Iteration 23
+
+- Planned: make release upload output explicit so a successful provider upload cannot look like a dry run.
+- Implemented:
+  - Added a verified upload plan object so the CLI can describe the provider, repository, assets, and command before running uploads.
+  - Replayed captured provider output on successful uploads and printed an explicit completion message.
+  - Labeled dry-run output with `No files were uploaded` and showed the exact command under a `Command:` heading.
+  - Added GitLab duplicate-asset guidance that says a previous upload may have succeeded and explains how to retry the same version.
+  - Made `launcher release keygen` report whether the private key is covered by `.gitignore` instead of always claiming it was added.
+  - Made `launcher build --spec-only` say that PyInstaller was not run.
+  - Made real `launcher build` runs print `Running PyInstaller` and a clear build-complete output path.
+  - Made PyInstaller failures include the exit code and exact command instead of exposing `CalledProcessError` wording.
+  - Added focused release CLI tests for dry-run output, GitLab and GitHub successful provider output, and duplicate GitLab asset failures.
+  - Added focused build and keygen tests for the clarified output paths.
+- Learned:
+  - Successful provider output was previously captured and discarded, so real uploads looked like a printed command without a result.
+  - `release keygen` had a misleading success message for private-key paths outside the current directory.
+  - `launcher build` succeeded quietly enough that spec-only and full build modes were not clearly distinguished.
+- Verification:
+  - `uv run pytest tests/test_release_cli.py::test_cli_keygen_prints_gitignore_status tests/test_release_cli.py::test_cli_keygen_explains_private_key_outside_gitignore_scope -q`
+  - `uv run pytest tests/test_build_cli.py -q`
+  - `uv run pytest tests/test_release_cli.py tests/test_build_cli.py -q`
+  - `uv run pytest tests/test_release_cli.py -q`
+  - `uv run ruff check launcher/release_cli.py launcher/build_cli.py tests/test_release_cli.py tests/test_build_cli.py`
+  - `uv run --with pyright pyright launcher/release_cli.py launcher/build_cli.py tests/test_release_cli.py tests/test_build_cli.py`
+  - `git diff --check`
+  - `uv run pytest -q`
+  - `uv run ruff check .`
+  - Review agent found no blocking issues.
+- Next: retry `launcher release upload`, `launcher release keygen`, and `launcher build --spec-only` in a real app repo and confirm the terminal output is clear end to end.

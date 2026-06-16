@@ -54,6 +54,26 @@ def _release_zip_bytes(files: dict[str, str] | None = None, symlinks: dict[str, 
     return zip_buffer.getvalue()
 
 
+def _prepare_signed_release(tmp_path: Path, monkeypatch, *, repository: str) -> str:
+    monkeypatch.chdir(tmp_path)
+    app_dir = tmp_path / "packaging" / "launcher"
+    dist_dir = tmp_path / "dist"
+    app_dir.mkdir(parents=True)
+    dist_dir.mkdir()
+    (app_dir / "application.yml").write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                f"repository: {repository}",
+            ]
+        )
+    )
+    (dist_dir / "myapp-v1.2.3.zip").write_bytes(_release_zip_bytes())
+    public_key = release_cli.keygen()
+    release_cli.sign_release()
+    return public_key
+
+
 def test_archive_release_default_git_archive_writes_dist_zip(tmp_path, monkeypatch):
     """archive should create the signed-release zip from tracked files by default."""
     repo = _init_release_repo(tmp_path)
@@ -555,6 +575,35 @@ def test_keygen_writes_key_and_gitignore_entry(tmp_path, monkeypatch):
     assert "launcher-signing-key.pem" in (tmp_path / ".gitignore").read_text()
 
 
+def test_cli_keygen_prints_gitignore_status(tmp_path, monkeypatch, capsys):
+    """keygen output should say where the key was written and how it is protected."""
+    monkeypatch.chdir(tmp_path)
+
+    result = release_cli.main(["keygen"])
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert "Private key written to: launcher-signing-key.pem" in output.out
+    assert "Private key ignored by git: launcher-signing-key.pem" in output.out
+    assert "Add this public key to your app config:" in output.out
+
+
+def test_cli_keygen_explains_private_key_outside_gitignore_scope(tmp_path, monkeypatch, capsys):
+    """keygen should not claim .gitignore coverage for paths outside the current project."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    private_key = tmp_path / "outside-signing-key.pem"
+
+    result = release_cli.main(["keygen", "--private-key", str(private_key)])
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert f"Private key written to: {private_key}" in output.out
+    assert "Private key is outside the current directory, so .gitignore was not changed." in output.out
+    assert "Keep this private key secret and out of source control." in output.out
+
+
 def test_sign_infers_config_archive_and_version_from_defaults(tmp_path, monkeypatch):
     """sign should infer app name from config and version/archive from dist/."""
     monkeypatch.chdir(tmp_path)
@@ -1026,6 +1075,94 @@ def test_upload_dry_run_uses_gitlab_cli(tmp_path, monkeypatch):
     ]
 
 
+def test_cli_upload_dry_run_labels_command_and_assets(tmp_path, monkeypatch, capsys):
+    """Dry-run upload output should be impossible to confuse with a real upload."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text("")
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    public_key = _prepare_signed_release(
+        tmp_path,
+        monkeypatch,
+        repository="https://gitlab.com/my-org/myapp.git",
+    )
+
+    result = release_cli.main(["upload", "--public-key", public_key, "--dry-run"])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Dry run: verified MyApp v1.2.3 release assets." in output
+    assert "No files were uploaded." in output
+    assert "Would upload to GitLab: https://gitlab.com/my-org/myapp.git" in output
+    assert "Assets:" in output
+    assert "Archive: dist/myapp-v1.2.3.zip" in output
+    assert "Manifest: dist/launcher-manifest.yml" in output
+    assert "Signature: dist/launcher-manifest.yml.sig" in output
+    assert "Command:" in output
+    assert "glab release upload v1.2.3" in output
+    assert "Upload complete" not in output
+
+
+def test_cli_upload_success_prints_provider_output_and_completion(tmp_path, monkeypatch, capsys):
+    """Successful upload output should say what happened and replay provider details."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text(
+        "#!/bin/sh\n"
+        "echo 'provider stdout: uploaded archive'\n"
+        "echo 'provider stderr: linked assets' >&2\n"
+        "exit 0\n"
+    )
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    public_key = _prepare_signed_release(
+        tmp_path,
+        monkeypatch,
+        repository="https://gitlab.com/my-org/myapp.git",
+    )
+
+    result = release_cli.main(["upload", "--public-key", public_key])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Uploading MyApp v1.2.3 release assets to GitLab." in output
+    assert "Repository: https://gitlab.com/my-org/myapp.git" in output
+    assert "Assets:" in output
+    assert "Command:" in output
+    assert "provider stdout: uploaded archive" in output
+    assert "provider stderr: linked assets" in output
+    assert "Upload complete: MyApp v1.2.3 release assets are published." in output
+
+
+def test_cli_upload_success_prints_github_provider_name(tmp_path, monkeypatch, capsys):
+    """GitHub upload output should use the same explicit success flow as GitLab."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("#!/bin/sh\necho 'provider stdout: uploaded with clobber'\nexit 0\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    public_key = _prepare_signed_release(
+        tmp_path,
+        monkeypatch,
+        repository="https://github.com/my-org/myapp.git",
+    )
+
+    result = release_cli.main(["upload", "--public-key", public_key])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Uploading MyApp v1.2.3 release assets to GitHub." in output
+    assert "Repository: https://github.com/my-org/myapp.git" in output
+    assert "gh release upload v1.2.3" in output
+    assert "--clobber" in output
+    assert "provider stdout: uploaded with clobber" in output
+    assert "Upload complete: MyApp v1.2.3 release assets are published." in output
+
+
 def test_upload_missing_provider_cli_explains_install_and_manual_upload(tmp_path, monkeypatch):
     """Missing gh/glab should produce a helpful prerequisite-oriented error."""
     monkeypatch.chdir(tmp_path)
@@ -1085,6 +1222,33 @@ def test_upload_gitlab_cli_failure_explains_release_prerequisites(tmp_path, monk
     assert "git push origin v1.2.3" in message
     assert "glab auth status" in message
     assert "Traceback" not in message
+
+
+def test_upload_gitlab_duplicate_asset_failure_explains_previous_success(tmp_path, monkeypatch):
+    """GitLab duplicate-asset errors should explain that the previous upload likely worked."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text(
+        "#!/bin/sh\n"
+        "echo '{message: [Url has already been taken, Name has already been taken, Filepath has already been taken]}' >&2\n"
+        "exit 1\n"
+    )
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    public_key = _prepare_signed_release(
+        tmp_path,
+        monkeypatch,
+        repository="https://gitlab.com/my-org/myapp.git",
+    )
+
+    with pytest.raises(release_cli.ReleaseCliError) as exc_info:
+        release_cli.upload_release(public_key=public_key)
+
+    message = str(exc_info.value)
+    assert "GitLab reports that one or more release assets already exist." in message
+    assert "A previous upload may have succeeded." in message
+    assert "Delete or replace the existing GitLab release assets before retrying the same version" in message
 
 
 def test_upload_github_cli_failure_explains_release_prerequisites(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -182,7 +183,13 @@ def run_pyinstaller(plan: BuildPlan) -> None:
         (plan.output_dir / DEFAULT_BUILD_DIR_NAME / "pyinstaller").as_posix(),
         plan.spec_path.as_posix(),
     ]
-    subprocess.run(command, check=True)
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise BuildCliError(
+            f"PyInstaller failed with exit code {e.returncode}.\n\n"
+            f"Command:\n  {format_shell_command(command)}"
+        ) from e
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -208,15 +215,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise BuildCliError("--icon cannot be used with --spec because icon paths are encoded in the spec")
         plan = create_build_plan(config_path=args.config, output_dir=args.out, spec_path=args.spec, icon_path=args.icon)
         write_generated_files(plan)
-        if not args.spec_only:
+        if args.spec_only:
+            print("Spec-only mode: generated build files without running PyInstaller.")
+        else:
+            print("Running PyInstaller...")
             run_pyinstaller(plan)
+            print(f"Build complete: packaged launcher files are in {plan.output_dir}")
         print(f"Launcher build spec: {plan.spec_path}")
         print(f"Launcher build output: {plan.output_dir}")
         return 0
-    except (BuildCliError, subprocess.CalledProcessError) as e:
+    except BuildCliError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     return 1
+
+
+def format_shell_command(command: Sequence[str]) -> str:
+    """Render a command for copy/paste-friendly CLI output."""
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def _find_icon(config_dir: Path) -> Path | None:
