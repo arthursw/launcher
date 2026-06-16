@@ -17,7 +17,7 @@ from .environment import (
     compute_project_install_fingerprint,
 )
 from .proxy import discover_proxy_settings
-from .runner import ScriptRunner, InitTimeoutError
+from .runner import ScriptRunner, InitTimeoutError, RunnerError
 from .updater import HTTPStatusError, NetworkError, DownloadError, UpdaterError, update_sources
 from .state import LauncherState
 
@@ -294,6 +294,13 @@ class LauncherWorker:
             # Check if environment exists before creating
             env_existed = self._env_manager.environment_exists(self._config.env_name)
             dependency_hash = compute_dependency_hash(self._config)
+            project_install_fingerprint = None
+            project_install_managed_by_environment = False
+            if self._config.entrypoint.mode == "project":
+                project_install_fingerprint = compute_project_install_fingerprint(self._config, version)
+                project_install_managed_by_environment = self._env_manager.project_install_managed_by_environment(
+                    self._config
+                )
             if (
                 env_existed
                 and self._state
@@ -301,6 +308,17 @@ class LauncherWorker:
                 and self._state.dependency_hash != dependency_hash
             ):
                 self._log("Dependency inputs changed; recreating environment...")
+                self._env_manager.delete_environment(self._config.env_name)
+                env_existed = False
+            if (
+                project_install_managed_by_environment
+                and env_existed
+                and (
+                    not self._state
+                    or self._state.project_install_fingerprint != project_install_fingerprint
+                )
+            ):
+                self._log("Project package inputs changed; recreating environment...")
                 self._env_manager.delete_environment(self._config.env_name)
                 env_existed = False
 
@@ -326,20 +344,8 @@ class LauncherWorker:
                 if not self._runner.run_install_script():
                     raise Exception("Install script failed")
 
-            project_install_fingerprint = None
             if self._config.entrypoint.mode == "project":
-                project_install_fingerprint = compute_project_install_fingerprint(self._config, version)
-                should_install_project = (
-                    not self._state
-                    or not env_existed
-                    or self._state.project_install_fingerprint != project_install_fingerprint
-                )
-                if should_install_project:
-                    self._log("Installing project package...")
-                    if not self._runner.install_project():
-                        raise Exception("Project package install failed")
-                else:
-                    self._log("Project package install is up to date")
+                self._log("Project package install is managed by environment dependencies")
 
             if self._state:
                 self._state.version = version
@@ -398,6 +404,8 @@ class LauncherWorker:
             self._error(f"Download error: {e}")
         except EnvironmentError as e:
             self._error(f"Environment error: {e}")
+        except RunnerError as e:
+            self._error(f"Launch error: {e}")
         except Exception as e:
             logger.exception("Unexpected error in worker")
             self._error(f"Unexpected error: {e}")

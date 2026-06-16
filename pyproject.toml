@@ -9,7 +9,7 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.31",
     "toml>=0.10",
-    "wetlands>=0.4.11",
+    "wetlands>=1.0.5",
 ]
 
 [project.optional-dependencies]

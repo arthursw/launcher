@@ -3,11 +3,15 @@
 import hashlib
 import logging
 from pathlib import Path
+import re
 import subprocess
+import tomllib
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import unquote, urlparse
 
 from wetlands.environment_manager import EnvironmentManager
 from wetlands.environment import Environment
+from wetlands._internal.dependency_manager import LocalDependency
 
 if TYPE_CHECKING:
     from .config import AppConfig
@@ -103,14 +107,32 @@ class LauncherEnvironmentManager:
         env_name = config.env_name
         config_file_path = config.config_file_path
         extras = getattr(config, "extras", []) or []
+        local_dependency = self.project_local_dependency(config)
 
         if config_file_path and config_file_path.exists():
             logger.info(f"Creating environment '{env_name}' from config: {config_file_path}")
-            return self._manager.create_from_config(
-                name=env_name,
-                config_path=config_file_path,
-                optional_dependencies=extras or None,
-            )
+            if local_dependency:
+                dependencies = self._manager._parse_dependencies_from_config(
+                    config_file_path,
+                    environment_name=env_name,
+                    optional_dependencies=extras or None,
+                )
+                dependencies["local"] = [
+                    *dependencies.get("local", []),
+                    local_dependency,
+                ]
+                try:
+                    return self._manager.create(name=env_name, dependencies=dependencies)
+                except Exception as e:
+                    raise _environment_create_error(e, env_name, config_file_path, config) from e
+            try:
+                return self._manager.create_from_config(
+                    name=env_name,
+                    config_path=config_file_path,
+                    optional_dependencies=extras or None,
+                )
+            except Exception as e:
+                raise _environment_create_error(e, env_name, config_file_path, config) from e
         if extras:
             raise EnvironmentError(
                 "Dependency extras require a dependency config file, but "
@@ -126,9 +148,66 @@ class LauncherEnvironmentManager:
                 "app intentionally has no dependency config file, set "
                 "`configuration: null`."
             )
-        else:
-            logger.info(f"Creating environment '{env_name}' with no dependencies")
+        logger.info(f"Creating environment '{env_name}' with no dependencies")
+        try:
+            if local_dependency:
+                return self._manager.create(name=env_name, dependencies={"local": [local_dependency]})
             return self._manager.create(name=env_name)
+        except Exception as e:
+            raise _environment_create_error(e, env_name, config_file_path, config) from e
+
+    def project_install_managed_by_environment(self, config: "AppConfig") -> bool:
+        """Return whether Wetlands can install the project as a local dependency."""
+        return self._is_project_entrypoint(config)
+
+    def project_local_dependency(self, config: "AppConfig") -> Optional[LocalDependency]:
+        """Build the Wetlands local dependency for project-mode apps when supported."""
+        if not self.project_install_managed_by_environment(config):
+            return None
+
+        project_directory = config.project_directory_path
+        if not project_directory.exists():
+            raise EnvironmentError(
+                f"Configured project directory not found: {project_directory}\n"
+                "Update `entrypoint.project_directory` so it points to the Python "
+                "project directory inside the downloaded app sources."
+            )
+        if not project_directory.is_dir():
+            raise EnvironmentError(f"Configured project directory is not a directory: {project_directory}")
+
+        package_name = _read_project_package_name(project_directory)
+        if not package_name:
+            raise EnvironmentError(
+                "Project mode uses Wetlands local dependencies, which require the Python package name. "
+                f"Add [project].name to {project_directory / 'pyproject.toml'}."
+            )
+        missing_paths = _missing_project_local_dependency_paths(project_directory)
+        if missing_paths:
+            formatted = "\n".join(f"  - {path}" for path in missing_paths)
+            raise EnvironmentError(
+                "Project mode cannot install this release because the project declares a missing local path dependency.\n"
+                f"Project directory: {project_directory}\n"
+                f"Missing path dependencies:\n{formatted}\n"
+                "Fixes:\n"
+                "  - Include these local package directories in the app release archive, for example with "
+                "`release.archive.include`.\n"
+                "  - Or change the project dependency to a published package/version that Pixi can download.\n"
+                "  - Or remove stale local path dependencies from the packaged pyproject.toml."
+            )
+        return {
+            "name": _normalize_distribution_name(package_name),
+            "path": project_directory,
+            "editable": True,
+        }
+
+    @staticmethod
+    def _is_project_entrypoint(config: "AppConfig") -> bool:
+        return getattr(getattr(config, "entrypoint", None), "mode", None) == "project"
+
+    def uses_pixi(self) -> bool:
+        """Return whether the underlying Wetlands manager is using Pixi."""
+        settings = getattr(self._manager, "settings_manager", None)
+        return bool(getattr(settings, "use_pixi", False))
 
     def delete_environment(self, env_name: str) -> bool:
         """Delete an environment.
@@ -235,10 +314,144 @@ def compute_dependency_hash(config: "AppConfig") -> str:
     return digest.hexdigest()
 
 
+def _read_project_package_name(project_directory: Path) -> Optional[str]:
+    pyproject = _read_project_pyproject(project_directory)
+    if not pyproject:
+        return None
+    _path, data = pyproject
+
+    project = data.get("project")
+    if isinstance(project, dict):
+        name = project.get("name")
+        if isinstance(name, str) and name.strip():
+            return name
+
+    tool = data.get("tool")
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry")
+        if isinstance(poetry, dict):
+            name = poetry.get("name")
+            if isinstance(name, str) and name.strip():
+                return name
+
+    return None
+
+
+def _read_project_pyproject(project_directory: Path) -> Optional[tuple[Path, dict]]:
+    pyproject = project_directory / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        return pyproject, tomllib.loads(pyproject.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise EnvironmentError(f"Invalid project pyproject.toml: {pyproject}: {e}") from e
+
+
+def _missing_project_local_dependency_paths(project_directory: Path) -> list[Path]:
+    pyproject = _read_project_pyproject(project_directory)
+    if not pyproject:
+        return []
+    _path, data = pyproject
+    candidates = _project_local_dependency_paths(data, project_directory)
+    return sorted({path for path in candidates if not path.exists()})
+
+
+def _project_local_dependency_paths(data: dict, project_directory: Path) -> list[Path]:
+    paths: list[Path] = []
+    project = data.get("project")
+    if isinstance(project, dict):
+        paths.extend(_dependency_string_paths(project.get("dependencies"), project_directory))
+        optional = project.get("optional-dependencies")
+        if isinstance(optional, dict):
+            for dependencies in optional.values():
+                paths.extend(_dependency_string_paths(dependencies, project_directory))
+
+    tool = data.get("tool")
+    if isinstance(tool, dict):
+        uv = tool.get("uv")
+        if isinstance(uv, dict):
+            paths.extend(_source_table_paths(uv.get("sources"), project_directory))
+        pixi = tool.get("pixi")
+        if isinstance(pixi, dict):
+            paths.extend(_source_table_paths(pixi.get("pypi-dependencies"), project_directory))
+
+    return paths
+
+
+def _dependency_string_paths(dependencies: object, base: Path) -> list[Path]:
+    if not isinstance(dependencies, list):
+        return []
+    paths: list[Path] = []
+    for dependency in dependencies:
+        if not isinstance(dependency, str) or "@" not in dependency:
+            continue
+        _name, target = dependency.split("@", 1)
+        path = _path_from_dependency_target(target.strip(), base)
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _source_table_paths(sources: object, base: Path) -> list[Path]:
+    if not isinstance(sources, dict):
+        return []
+    paths: list[Path] = []
+    for source in sources.values():
+        if isinstance(source, dict):
+            path_value = source.get("path")
+            if isinstance(path_value, str):
+                paths.append(_resolve_dependency_path(path_value, base))
+        elif isinstance(source, str) and "@" in source:
+            _name, target = source.split("@", 1)
+            path = _path_from_dependency_target(target.strip(), base)
+            if path:
+                paths.append(path)
+    return paths
+
+
+def _path_from_dependency_target(target: str, base: Path) -> Optional[Path]:
+    if target.startswith("file:"):
+        parsed = urlparse(target)
+        if parsed.scheme == "file":
+            return Path(unquote(parsed.path)).resolve()
+    if target.startswith((".", "/", "~")):
+        return _resolve_dependency_path(target, base)
+    return None
+
+
+def _resolve_dependency_path(value: str, base: Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
+def _normalize_distribution_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower()
+
+
+def _environment_create_error(
+    error: Exception,
+    env_name: str,
+    config_file_path: Optional[Path],
+    config: "AppConfig",
+) -> EnvironmentError:
+    message = (
+        f"Wetlands failed to create environment {env_name!r}.\n"
+        f"Dependency config: {config_file_path}\n"
+        f"Project directory: {config.project_directory_path if config.entrypoint.mode == 'project' else 'not configured'}\n"
+        "If the Wetlands output mentions `Distribution not found at: file://...`, a dependency points to a local "
+        "path that is missing from the downloaded release archive. Include that directory with `release.archive.include` "
+        "or depend on a published package version instead.\n"
+        f"Original error: {error}"
+    )
+    return EnvironmentError(message)
+
+
 def compute_project_install_fingerprint(config: "AppConfig", version: str) -> str:
     """Hash project-mode inputs that should trigger package reinstall."""
     digest = hashlib.sha256()
-    digest.update(b"project-install\0")
+    digest.update(b"project-local-dependency\0")
     digest.update(version.encode("utf-8"))
     digest.update(b"\0")
 

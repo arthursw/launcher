@@ -106,6 +106,12 @@ Use `script` for a Python file, `module` for `python -m ...`, and `project`
 for installed console scripts or apps that need package metadata, entry points,
 plugins, or packaged data.
 
+In project mode, Launcher installs the package from `entrypoint.project_directory` before running `entrypoint.command`.
+This is an editable local dependency managed by Wetlands, which avoids requiring `pip` inside Pixi environments.
+The project directory should contain a `pyproject.toml` with `[project].name`.
+Any local path dependencies declared by that project must be included in the release archive too.
+For example, if `backend/pyproject.toml` depends on `../packages/my-core`, the archive must contain `packages/my-core`.
+
 Entrypoint paths and `configuration` are relative to the downloaded repository
 root. If your Python project is in a subdirectory, point the dependency config
 at that subdirectory:

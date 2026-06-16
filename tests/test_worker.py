@@ -398,7 +398,7 @@ class TestLauncherWorker:
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')
     @patch('launcher.worker.ScriptRunner')
-    def test_project_entrypoint_installs_project_when_fingerprint_missing(
+    def test_project_entrypoint_records_fingerprint_when_missing(
         self,
         mock_runner_class,
         mock_update_sources,
@@ -407,7 +407,7 @@ class TestLauncherWorker:
         queues,
         monkeypatch,
     ):
-        """Project mode installs the package before launching when state is missing."""
+        """Project mode records the managed local dependency fingerprint when state is missing."""
         import yaml
 
         monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
@@ -430,8 +430,8 @@ class TestLauncherWorker:
         mock_env_manager_class.return_value = mock_env_instance
         mock_env_instance.environment_exists.return_value = True
         mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_env_instance.project_install_managed_by_environment.return_value = True
         mock_runner = MagicMock()
-        mock_runner.install_project.return_value = True
         mock_runner_class.return_value = mock_runner
 
         worker = LauncherWorker(config_file, event_queue, response_queue)
@@ -441,14 +441,14 @@ class TestLauncherWorker:
         time.sleep(0.5)
         worker.stop()
 
-        mock_runner.install_project.assert_called_once()
+        mock_runner.install_project.assert_not_called()
         state = LauncherState.for_app("TestApp")
         assert state.project_install_fingerprint
 
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')
     @patch('launcher.worker.ScriptRunner')
-    def test_project_entrypoint_skips_project_install_when_fingerprint_matches(
+    def test_project_entrypoint_keeps_managed_install_when_fingerprint_matches(
         self,
         mock_runner_class,
         mock_update_sources,
@@ -457,7 +457,7 @@ class TestLauncherWorker:
         queues,
         monkeypatch,
     ):
-        """Project mode should not reinstall when the stored fingerprint matches."""
+        """Project mode should keep the managed local dependency when the fingerprint matches."""
         import yaml
         from launcher.environment import compute_project_install_fingerprint
         from launcher.config import load_config
@@ -486,8 +486,8 @@ class TestLauncherWorker:
         mock_env_manager_class.return_value = mock_env_instance
         mock_env_instance.environment_exists.return_value = True
         mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_env_instance.project_install_managed_by_environment.return_value = True
         mock_runner = MagicMock()
-        mock_runner.install_project.return_value = True
         mock_runner_class.return_value = mock_runner
 
         worker = LauncherWorker(config_file, event_queue, response_queue)
@@ -502,7 +502,7 @@ class TestLauncherWorker:
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')
     @patch('launcher.worker.ScriptRunner')
-    def test_project_entrypoint_installs_project_when_environment_is_new_even_if_fingerprint_matches(
+    def test_project_entrypoint_lets_environment_create_managed_install_when_new(
         self,
         mock_runner_class,
         mock_update_sources,
@@ -511,7 +511,7 @@ class TestLauncherWorker:
         queues,
         monkeypatch,
     ):
-        """A fresh environment still needs the project package installed."""
+        """A fresh environment installs the project package through Wetlands dependencies."""
         import yaml
         from launcher.environment import compute_project_install_fingerprint
         from launcher.config import load_config
@@ -540,8 +540,8 @@ class TestLauncherWorker:
         mock_env_manager_class.return_value = mock_env_instance
         mock_env_instance.environment_exists.return_value = False
         mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_env_instance.project_install_managed_by_environment.return_value = True
         mock_runner = MagicMock()
-        mock_runner.install_project.return_value = True
         mock_runner_class.return_value = mock_runner
 
         worker = LauncherWorker(config_file, event_queue, response_queue)
@@ -551,7 +551,109 @@ class TestLauncherWorker:
         time.sleep(0.5)
         worker.stop()
 
-        mock_runner.install_project.assert_called_once()
+        mock_runner.install_project.assert_not_called()
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_project_entrypoint_skips_manual_install_when_environment_manages_local_dependency(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        tmp_path,
+        queues,
+        monkeypatch,
+    ):
+        """Wetlands local dependencies replace the old manual pip install step."""
+        import yaml
+
+        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        event_queue, response_queue = queues
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump({
+            "name": "TestApp",
+            "entrypoint": {"mode": "project", "command": "test-app-gui"},
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "configuration": "backend/pyproject.toml",
+        }))
+        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.project_install_managed_by_environment.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        mock_runner.install_project.assert_not_called()
+        state = LauncherState.for_app("TestApp")
+        assert state.project_install_fingerprint
+
+    @patch('launcher.worker.LauncherEnvironmentManager')
+    @patch('launcher.worker.update_sources')
+    @patch('launcher.worker.ScriptRunner')
+    def test_project_entrypoint_recreates_environment_when_managed_project_inputs_change(
+        self,
+        mock_runner_class,
+        mock_update_sources,
+        mock_env_manager_class,
+        tmp_path,
+        queues,
+        monkeypatch,
+    ):
+        """Managed local project installs are refreshed by recreating the environment."""
+        import yaml
+
+        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        event_queue, response_queue = queues
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(yaml.dump({
+            "name": "TestApp",
+            "entrypoint": {"mode": "project", "command": "test-app-gui"},
+            "path": str(tmp_path / "apps"),
+            "repository": "git@github.com:owner/repo.git",
+            "auto_update": False,
+            "version": "testapp-v1.0.0",
+            "configuration": "backend/pyproject.toml",
+        }))
+        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        state = LauncherState.for_app("TestApp")
+        state.project_install_fingerprint = "old-project-fingerprint"
+        state.save()
+        mock_update_sources.return_value = (False, "testapp-v1.0.0")
+        mock_env_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_env_instance
+        mock_env_instance.environment_exists.return_value = True
+        mock_env_instance.project_install_managed_by_environment.return_value = True
+        mock_env_instance.get_or_create_environment.return_value = MagicMock()
+        mock_runner = MagicMock()
+        mock_runner_class.return_value = mock_runner
+
+        worker = LauncherWorker(config_file, event_queue, response_queue)
+        worker.start()
+
+        import time
+        time.sleep(0.5)
+        worker.stop()
+
+        mock_env_instance.delete_environment.assert_called_once_with("TestApp")
+        mock_runner.install_project.assert_not_called()
 
 
 class TestReinstallOnUpdate:

@@ -3,8 +3,11 @@
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from launcher.config import AppConfig, EntryPointConfig
 from launcher.environment import (
+    EnvironmentError as LauncherEnvironmentError,
     LauncherEnvironmentManager,
     compute_dependency_hash,
     compute_project_install_fingerprint,
@@ -78,6 +81,195 @@ class TestLauncherEnvironmentManager:
         assert result == mock_env
         mock_instance.create_from_config.assert_called_once()
         assert mock_instance.create_from_config.call_args.kwargs["optional_dependencies"] is None
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_project_mode_adds_wetlands_local_dependency_from_config(self, mock_env_manager_class, tmp_path):
+        """Project mode should let Wetlands install the local package with backend-specific commands."""
+        mock_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_instance
+        mock_instance._parse_dependencies_from_config.return_value = {"pip": ["requests"]}
+        mock_env = MagicMock()
+        mock_instance.create.return_value = mock_env
+
+        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text("[project]\nname = 'My App'\n")
+        config = AppConfig(
+            name="MyApp",
+            entrypoint=EntryPointConfig(mode="project", command="my-app-gui", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="https://github.com/my-org/myapp.git",
+            version="v1.2.3",
+            configuration="backend/pyproject.toml",
+        )
+
+        manager = LauncherEnvironmentManager()
+        result = manager.get_or_create_environment(config)
+
+        assert result == mock_env
+        mock_instance.create_from_config.assert_not_called()
+        mock_instance._parse_dependencies_from_config.assert_called_once_with(
+            pyproject,
+            environment_name="MyApp",
+            optional_dependencies=None,
+        )
+        mock_instance.create.assert_called_once_with(
+            name="MyApp",
+            dependencies={
+                "pip": ["requests"],
+                "local": [
+                    {
+                        "name": "my-app",
+                        "path": project,
+                        "editable": True,
+                    }
+                ],
+            },
+        )
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_project_mode_requires_package_name_for_wetlands_local_dependency(
+        self,
+        mock_env_manager_class,
+        tmp_path,
+    ):
+        """Wetlands local dependencies need the Python distribution name."""
+        mock_env_manager_class.return_value = MagicMock()
+        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        (project / "pyproject.toml").write_text("[tool.pixi.project]\nname = 'pixi-env'\n")
+        config = AppConfig(
+            name="MyApp",
+            entrypoint=EntryPointConfig(mode="project", command="my-app-gui", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="https://github.com/my-org/myapp.git",
+            version="v1.2.3",
+            configuration="backend/pyproject.toml",
+        )
+
+        manager = LauncherEnvironmentManager()
+
+        with pytest.raises(LauncherEnvironmentError, match=r"\[project\]\.name"):
+            manager.get_or_create_environment(config)
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_project_mode_rejects_missing_project_local_dependency_path(
+        self,
+        mock_env_manager_class,
+        tmp_path,
+    ):
+        """Missing local path dependencies should fail before Pixi reports a solver error."""
+        mock_env_manager_class.return_value = MagicMock()
+        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        missing = sources / "packages" / "my-core"
+        (project / "pyproject.toml").write_text(
+            "\n".join(
+                [
+                    "[project]",
+                    "name = 'my-app'",
+                    "dependencies = ['my-core @ ../packages/my-core']",
+                ]
+            )
+        )
+        config = AppConfig(
+            name="MyApp",
+            entrypoint=EntryPointConfig(mode="project", command="my-app-gui", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="https://github.com/my-org/myapp.git",
+            version="v1.2.3",
+            configuration="backend/pyproject.toml",
+        )
+
+        manager = LauncherEnvironmentManager()
+
+        with pytest.raises(LauncherEnvironmentError) as exc_info:
+            manager.get_or_create_environment(config)
+
+        message = str(exc_info.value)
+        assert "missing local path dependency" in message
+        assert str(missing) in message
+        assert "release archive" in message
+        assert "release.archive.include" in message
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_project_mode_rejects_missing_uv_source_path(
+        self,
+        mock_env_manager_class,
+        tmp_path,
+    ):
+        """tool.uv.sources local paths should also be validated before environment creation."""
+        mock_env_manager_class.return_value = MagicMock()
+        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        missing = sources / "packages" / "my-core"
+        (project / "pyproject.toml").write_text(
+            "\n".join(
+                [
+                    "[project]",
+                    "name = 'my-app'",
+                    "dependencies = ['my-core']",
+                    "[tool.uv.sources]",
+                    "my-core = { path = '../packages/my-core', editable = true }",
+                ]
+            )
+        )
+        config = AppConfig(
+            name="MyApp",
+            entrypoint=EntryPointConfig(mode="project", command="my-app-gui", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="https://github.com/my-org/myapp.git",
+            version="v1.2.3",
+            configuration="backend/pyproject.toml",
+        )
+
+        manager = LauncherEnvironmentManager()
+
+        with pytest.raises(LauncherEnvironmentError) as exc_info:
+            manager.get_or_create_environment(config)
+
+        assert str(missing) in str(exc_info.value)
+
+    @patch('launcher.environment.EnvironmentManager')
+    def test_environment_create_failure_is_wrapped_with_project_context(
+        self,
+        mock_env_manager_class,
+        tmp_path,
+    ):
+        """Wetlands command failures should surface as actionable environment errors."""
+        mock_instance = MagicMock()
+        mock_env_manager_class.return_value = mock_instance
+        mock_instance._parse_dependencies_from_config.return_value = {"pip": ["requests"]}
+        mock_instance.create.side_effect = Exception("failed to solve the pypi requirements")
+        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        project = sources / "backend"
+        project.mkdir(parents=True)
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text("[project]\nname = 'my-app'\n")
+        config = AppConfig(
+            name="MyApp",
+            entrypoint=EntryPointConfig(mode="project", command="my-app-gui", project_directory="backend"),
+            path=str(tmp_path / "apps"),
+            repository="https://github.com/my-org/myapp.git",
+            version="v1.2.3",
+            configuration="backend/pyproject.toml",
+        )
+
+        manager = LauncherEnvironmentManager()
+
+        with pytest.raises(LauncherEnvironmentError) as exc_info:
+            manager.get_or_create_environment(config)
+
+        message = str(exc_info.value)
+        assert "Wetlands failed to create environment" in message
+        assert str(pyproject) in message
+        assert str(project) in message
+        assert "release.archive.include" in message
 
     @patch('launcher.environment.EnvironmentManager')
     def test_get_or_create_environment_from_config_with_extras(self, mock_env_manager_class, tmp_path):

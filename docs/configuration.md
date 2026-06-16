@@ -104,10 +104,11 @@ entrypoint:
   project_directory: backend
 ```
 
-In project mode, Launcher installs the project package with
-`python -m pip install .` from `project_directory`, then runs `command`.
-The project is reinstalled when the app release or project install inputs
-change.
+In project mode, Launcher installs the project package from `project_directory`, then runs `command`.
+Launcher passes the project to Wetlands as an editable local dependency so Pixi and Micromamba can use their own install mechanisms.
+The environment is recreated when the app release or project install inputs change.
+The project directory should contain a `pyproject.toml` with `[project].name` so Wetlands can name the local package.
+If that project declares other local path dependencies, such as `../packages/my-core` in `[project].dependencies`, `[tool.uv.sources]`, or `[tool.pixi.pypi-dependencies]`, those directories must also exist in the downloaded release archive.
 
 If your app code lives below the repository root, use paths from the repository
 root:

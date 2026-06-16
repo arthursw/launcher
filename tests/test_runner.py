@@ -180,34 +180,6 @@ def test_start_project_entrypoint_runs_installed_command(tmp_path):
     assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "backend"
 
 
-def test_install_project_runs_pip_install_from_project_directory(tmp_path):
-    """Project mode package install should run inside the project directory."""
-    sources = tmp_path / "sources"
-    app_sources = sources / "myapp-v1.2.3"
-    project = app_sources / "backend"
-    project.mkdir(parents=True)
-    config = AppConfig(
-        name="MyApp",
-        entrypoint=EntryPointConfig(mode="project", command="my-app-gui"),
-        path=str(sources),
-        repository="https://github.com/my-org/myapp.git",
-        version="v1.2.3",
-        configuration="backend/pyproject.toml",
-    )
-    process = MagicMock(returncode=0)
-    env = MagicMock()
-    env.execute_commands.return_value = process
-    runner = ScriptRunner(config, env_manager=MagicMock(), env=env)
-
-    assert runner.install_project() is True
-
-    env.execute_commands.assert_called_once_with(
-        commands=["python -m pip install ."],
-        popen_kwargs={"cwd": project},
-        wait=True,
-    )
-
-
 def test_ensure_still_running_rejects_immediate_exit(tmp_path):
     """Immediate app exits should be reported as startup failures."""
     sources = tmp_path / "sources"

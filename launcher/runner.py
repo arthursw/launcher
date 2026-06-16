@@ -137,30 +137,6 @@ class ScriptRunner:
 
         return self._process
 
-    def install_project(self) -> bool:
-        """Install the configured project package into the runtime environment."""
-        project_directory = self.config.project_directory_path
-        if not project_directory.exists():
-            raise RunnerError(
-                f"Configured project directory not found: {project_directory}\n"
-                "Update `entrypoint.project_directory` so it points to the Python "
-                "project directory inside the downloaded app sources."
-            )
-        if not project_directory.is_dir():
-            raise RunnerError(f"Configured project directory is not a directory: {project_directory}")
-
-        logger.info(f"Installing project package from: {project_directory}")
-        process = self.env.execute_commands(
-            commands=["python -m pip install ."],
-            popen_kwargs={"cwd": project_directory},
-            wait=True,
-        )
-        if process.returncode != 0:
-            logger.error(f"Project package install failed with return code {process.returncode}")
-            return False
-        logger.info("Project package installed successfully")
-        return True
-
     def _script_command(self) -> str:
         script_path = self.config.script_path
         if script_path is None:
