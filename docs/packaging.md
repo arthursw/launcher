@@ -1,25 +1,25 @@
 # Packaging Guide
 
-This guide explains how to use Launcher from your app repository.
+This guide describes the release workflow for an app repository that uses Launcher.
 
-You do not package your real app with PyInstaller. You package Launcher once,
-and Launcher downloads, verifies, installs, and starts your real app releases.
+Launcher is the stable executable users install.
+Your app is the versioned archive Launcher downloads from GitHub or GitLab releases.
 
-## 1. Add Launcher Tooling
+## Phase 1: Initialize Config
 
-In your app repository, add Launcher as a development dependency:
+Add Launcher as a development dependency:
 
 ```bash
 uv add --dev launcher
 ```
 
-## 2. Initialize Launcher Packaging
+Create the app-owned packaging files:
 
 ```bash
 uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git
 ```
 
-This creates the default app-owned launcher packaging folder:
+Launcher writes:
 
 ```text
 packaging/
@@ -28,19 +28,6 @@ packaging/
     |-- launcher.svg
     `-- icon_128x128.png
 ```
-
-The SVG is editable source artwork. The PNG is used as the default build icon.
-To copy a custom app icon into `packaging/launcher/`, pass `--icon`:
-
-```bash
-uv run launcher init \
-  --name MyApp \
-  --repository https://github.com/my-org/myapp.git \
-  --icon path/to/app.icns
-```
-
-Supported icon inputs are `.icns`, `.ico`, and `.png`. On macOS, `.icns` is the
-native icon format and is preferred for polished releases, but `.png` can be used.
 
 Edit `packaging/launcher/application.yml` for your app:
 
@@ -52,219 +39,140 @@ entrypoint:
   script: main.py
 auto_update: true
 configuration: pyproject.toml
-# extras:
-#   - desktop
 
 trust:
   mode: signed_manifest
-  # Replace this with the public key printed by `launcher release keygen`
   public_key: "<base64-ed25519-public-key>"
-  # With repository set, Launcher infers these GitLab/GitHub release asset URLs.
-  # Uncomment only for custom hosting, custom asset paths, or renamed release assets.
-  # manifest_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml"
-  # signature_url: "https://github.com/my-org/myapp/releases/download/{version}/launcher-manifest.yml.sig"
-  # archive_url: "https://github.com/my-org/myapp/releases/download/{version}/{archive_name}"
 ```
 
-The default config path is used automatically by `launcher run`,
-`launcher build`, and `launcher release ...`.
-
-`path` is optional. When omitted, Launcher stores downloaded app sources in the
-per-app runtime data directory, using one subfolder per version.
-
-To validate the config without building or starting the app:
+Validate the config:
 
 ```bash
 uv run launcher config check
 ```
 
-Choose the entrypoint mode that matches how you start the app during
-development:
+Use `script` for a Python file, `module` for `python -m ...`, and `project` for an installed console command.
+Entrypoint paths and `configuration` are relative to the downloaded app archive root.
+If your app has optional dependencies, list their extras in `extras`.
+If the dependency file lives below the repository root, set `configuration` to that path.
 
-```yaml
-entrypoint:
-  mode: script
-  script: main.py
-```
+## Phase 2: Create The Signing Key
 
-```yaml
-entrypoint:
-  mode: module
-  module: my_app
-  args:
-    - --desktop
-```
-
-```yaml
-entrypoint:
-  mode: project
-  command: my-app-gui
-  project_directory: backend
-```
-
-Use `script` for a Python file, `module` for `python -m ...`, and `project`
-for installed console scripts or apps that need package metadata, entry points,
-plugins, or packaged data.
-
-In project mode, Launcher installs the package from `entrypoint.project_directory` before running `entrypoint.command`.
-This is an editable local dependency managed by Wetlands, which avoids requiring `pip` inside Pixi environments.
-The project directory should contain a `pyproject.toml` with `[project].name`.
-Any local path dependencies declared by that project must be included in the release archive too.
-For example, if `backend/pyproject.toml` depends on `../packages/my-core`, the archive must contain `packages/my-core`.
-
-Entrypoint paths and `configuration` are relative to the downloaded repository
-root. If your Python project is in a subdirectory, point the dependency config
-at that subdirectory:
-
-```yaml
-entrypoint:
-  mode: module
-  module: my_app
-  args:
-    - --desktop
-configuration: backend/pyproject.toml
-extras:
-  - desktop
-```
-
-Use `extras` for optional dependency groups from `pyproject.toml`, for example
-the same group you install during development with `uv sync --extra desktop`.
-The configured dependency file must exist in the downloaded release archive. If
-your app intentionally has no dependency config file, set `configuration: null`.
-
-Launcher starts the app from the directory containing `configuration` and makes
-that directory importable. If that directory has a `src/` folder, Launcher makes
-it importable too. For the example above, the inferred launch directory is
-`backend/` and `backend/src` is importable. Override this only for unusual
-layouts:
-
-```yaml
-working_directory: backend
-pythonpath:
-  - backend/src
-```
-
-## 3. Create The Signing Key
-
-Generate the signing key once:
+Generate the app release signing key once:
 
 ```bash
 uv run launcher release keygen
 ```
 
-This creates `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the
-public key to place in `packaging/launcher/application.yml`.
+The command writes `launcher-signing-key.pem`, adds it to `.gitignore`, and prints the public key.
+Copy the printed public key into `trust.public_key`.
 
-Replace:
+Keep the private key secret.
+`launcher release sign` uses it to sign `launcher-manifest.yml`.
+The packaged launcher verifies that manifest before it downloads or runs app code.
 
-```yaml
-public_key: "<base64-ed25519-public-key>"
-```
+## Phase 3: Build, Sign, Package, And Upload The Launcher
 
-with the printed public key. The private key stays outside git and is used later
-by `launcher release sign`.
-
-When `repository` is set to a GitHub or GitLab repository, Launcher infers the release asset URLs that it downloads at runtime.
-The inferred defaults match the files produced by `launcher release archive`, `launcher release sign`, and `launcher release upload`.
-Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, renamed release assets, or endpoint-only configs that do not set `repository`.
-`{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the local archive filename written into the signed manifest.
-
-For GitLab, the packaged launcher uses the public GitLab API. If update checks
-fail with `404 Project Not Found`, verify that the project is public or add the
-numeric project id to `application.yml`:
-
-```yaml
-gitlab_project_id: "123456"
-```
-
-## 4. Build The Launcher
+Build the launcher executable:
 
 ```bash
-uv run --with pyinstaller launcher build
+uv run launcher build
 ```
 
-`launcher build` validates `packaging/launcher/application.yml` before writing
-build files or running PyInstaller, so config errors fail before a packaged app
-is produced.
+The build output is written under `dist/launcher/`.
+On macOS, PyInstaller can produce `dist/launcher/MyApp.app`.
+On Windows and Linux, PyInstaller produces a directory-style build such as `dist/launcher/myapp/`.
 
-Launcher generates PyInstaller build files from `packaging/launcher/` and writes
-the launcher build under:
+Sign and notarize the built launcher before packaging it.
+Launcher does not replace operating-system signing.
+
+Useful official references:
+
+- Apple: [Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+- Apple: [Code Signing Services](https://developer.apple.com/documentation/security/code-signing-services)
+- Microsoft: [Cryptography Tools](https://learn.microsoft.com/en-us/windows/win32/seccrypto/cryptography-tools)
+- Microsoft: [SignTool](https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool)
+
+For Linux, trust normally comes from the distribution channel.
+Use the signing and packaging conventions of the package manager, repository, or installer format you distribute through.
+
+After OS signing and notarization, package the launcher:
+
+```bash
+uv run launcher build package --version v1.2.3
+```
+
+The package name includes the app name, release version, and platform:
 
 ```text
-dist/launcher/
+dist/MyApp-launcher-v1.2.3-macos-arm64.zip
+dist/MyApp-launcher-v1.2.3-macos-x64.zip
+dist/MyApp-launcher-v1.2.3-windows-x64.zip
+dist/MyApp-launcher-v1.2.3-linux-x64.zip
 ```
 
-On macOS, PyInstaller may produce both forms:
+On macOS, `launcher build package` prefers the `.app` bundle and packages it with `ditto`.
+Otherwise it packages the PyInstaller directory-style build with Python zip tooling.
 
-```text
-dist/launcher/
-|-- MyApp.app
-|-- myapp/
-`-- build/
-```
-
-`MyApp.app` is the macOS app bundle. `myapp/` is PyInstaller's
-directory-style executable build, which is useful for command-line debugging.
-`build/` contains generated PyInstaller inputs and intermediate files; it is not
-part of the app release you give to users.
-
-The generated launcher build is distinct from your app release artifacts. You
-only need to rebuild it when launcher tooling, launcher config, icons, signing,
-or packaging settings change.
-
-For CI or inspection without running PyInstaller:
+Create the release and upload the launcher package:
 
 ```bash
-uv run launcher build --spec-only
+uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher build upload --version v1.2.3
 ```
 
-For a one-off build icon override without changing `packaging/launcher/`:
+`launcher build upload` uploads the current platform package with the provider CLI and updates `packaging/launcher/distribution.yml` only after the upload succeeds.
+That file is the source of truth for launcher download URLs used in future release notes.
+
+Launcher artifacts are uploaded only when the launcher executable changes.
+That is the canonical workflow.
+
+If you prefer every release to be self-contained, you may build, package, and upload launcher artifacts for every release.
+That costs more CI time and signing work, but it makes each release page contain every installer artifact directly.
+
+## Phase 4: Create App Releases
+
+Write user-facing release notes in Markdown, then create the provider release:
 
 ```bash
-uv run --with pyinstaller launcher build --icon path/to/app.icns
+uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
 ```
 
-## 5. Publish App Updates
+By default, the tag must already exist locally and on the configured remote.
+To create a local lightweight tag at `HEAD`, pass `--tag`.
+To push the tag before release creation, pass `--push`.
+Use `--remote` when the remote is not `origin`.
 
-For each app release, first publish a normal GitHub or GitLab release for the
-version tag, then let Launcher create and upload the signed update metadata for
-that release.
-
-### 5.1. Create The Release
-
-Create the GitHub or GitLab release for the tag you want users to run.
+GitHub release creation uses:
 
 ```bash
-gh release create v1.2.3 --generate-notes
+gh release create v1.2.3 --verify-tag --notes-file <generated-notes>
 ```
+
+GitLab release creation uses:
 
 ```bash
-glab release create v1.2.3 --notes "Release v1.2.3"
+glab release create v1.2.3 --notes-file <generated-notes>
 ```
 
-For more options, see [`gh release create`](https://cli.github.com/manual/gh_release_create)
-and [`glab release create`](https://docs.gitlab.com/cli/release/create/).
+Launcher preflights the remote GitLab tag first so `glab` cannot silently create a missing tag from the default branch.
 
-You can also create the release manually in the GitHub or GitLab web UI. See
-GitHub's [web UI release guide](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository?tool=webui)
-and GitLab's [Releases page guide](https://docs.gitlab.com/user/project/releases/#create-a-release-in-the-releases-page).
-For GitLab, tags alone are not enough: the packaged launcher asks the GitLab
-Releases API for the latest release.
+Generated release notes are your notes plus a Launcher-managed download block when launcher download URLs are known.
+Local launcher packages for the current version override older URLs from `packaging/launcher/distribution.yml`.
 
-### 5.2. Configure Archive Packaging
+## Phase 5: Build The App Archive
 
-For simple apps, no archive packaging config is needed.
-`launcher release archive VERSION` creates a `.zip` from tracked files at the requested git ref.
-That is enough when the files users need at runtime are already committed to git, such as Python modules, templates, package data, and dependency files.
+For simple apps, no extra archive config is needed.
+`launcher release archive VERSION` creates a zip from tracked files at the requested git ref.
 
-Some apps need release files that are produced by a build step and are not committed to git.
-Common examples are a web UI compiled by Vite, Webpack, or another JavaScript tool, generated documentation, generated schemas, or any static assets written into a build output directory.
-In that case, configure `release.archive` in `packaging/launcher/application.yml` so Launcher knows how to produce those files and where to place them in the final archive.
+```bash
+uv run launcher release archive v1.2.3
+```
 
-Use `build` for commands that must run before the archive is created.
-Use `include` for files or directories that those commands produce and that must be appended to the archive.
-The example below assumes a repository with a JavaScript frontend in `frontend/`, where `npm run build` writes compiled browser files to `frontend/dist/`.
-If your app uses a different tool or output directory, replace the commands and paths with your own.
+Before writing the archive, Launcher verifies that the release ref resolves to `HEAD` and that tracked files are clean.
+Untracked generated files are allowed so configured build outputs can be included.
+
+For generated assets, configure `release.archive` in `packaging/launcher/application.yml`:
 
 ```yaml
 release:
@@ -276,19 +184,16 @@ release:
         cwd: frontend
     include:
       - frontend/dist
-      # or
       - source: frontend/dist
         destination: my_app/static
 ```
 
 `build` commands are argv lists run with `shell=False`.
-`cwd` is optional and relative to the repository root.
+`cwd` is relative to the repository root.
 String `include` entries preserve the source path in the archive.
 Object `include` entries copy `source` to `destination`, where `destination` is relative to the archive root.
-Use the string form when the generated files should keep the same path they have in your repository.
-Use the object form when the generated files need to land somewhere else in the downloaded app sources.
 
-For rare cases where structured build and include rules are not enough, use a Python custom script:
+For rare cases, use a Python custom script:
 
 ```yaml
 release:
@@ -296,50 +201,23 @@ release:
     custom_script: packaging/launcher/custom_archive.py
 ```
 
-The custom script is called as `python <script> <version> <archive_path>` and must create the requested zip.
-It cannot be combined with `build` or `include`.
+The custom script is called as `python <script> <version> <archive_path>`.
+It must create the requested zip and cannot be combined with `build` or `include`.
 
-### 5.3. Build The App Archive
+## Phase 6: Publish Signed App Update Assets
 
-Run release commands from the app directory that contains `packaging/launcher/application.yml`.
-By default, `launcher release archive` uses that config file and writes the archive to `dist/` in the current directory, matching the defaults used later by `launcher release sign`, `verify`, and `upload`.
-
-Create the tag on the commit you are packaging (or fetch the tag from your remote repository), then build the archive:
-
-```bash
-git tag v1.2.3
-uv run launcher release archive v1.2.3
-```
-
-For a monorepo where Launcher is configured under an app subdirectory, run the same release commands from that subdirectory:
-
-```bash
-cd backend
-uv run launcher release archive v1.2.3
-uv run launcher release sign
-```
-
-This writes `backend/dist/<archive>.zip`, so `sign` can find it with its default `dist/` lookup.
-Git operations still use the repository root internally, so the archive can contain tracked files from both `frontend/` and `backend/` when the app needs both.
-
-Launcher hashes this exact local archive when it creates the signed manifest.
-Before writing the archive, Launcher verifies that `v1.2.3` resolves to `HEAD` and that tracked files are clean.
-Untracked generated files are allowed so build output can be included without committing it.
-
-### 5.4. Sign And Verify
-
-Create and verify the signed Launcher metadata:
+Create and verify the signed update metadata:
 
 ```bash
 uv run launcher release sign
 uv run launcher release verify
 ```
 
-By default, these commands read `packaging/launcher/application.yml`, infer the `.zip` archive from `dist/`, infer the version from the archive filename, and write the archive URL into the signed manifest.
+The commands infer the archive and version from `dist/` by default.
+If more than one archive exists, pass `--archive`.
 If the archive filename does not contain the version, pass `--version` to `sign`.
-Both commands also check that the archive can be safely extracted by the packaged launcher.
-Unsafe paths, special files, and unsafe symlinks are rejected before metadata is uploaded.
-The commands write:
+
+The signed release assets are:
 
 ```text
 dist/
@@ -348,18 +226,13 @@ dist/
 `-- launcher-manifest.yml.sig
 ```
 
-### 5.5. Upload The App Archive And Launcher Metadata
-
-Upload the app archive, manifest, and signature to the release:
+Upload the app archive, manifest, and signature:
 
 ```bash
 uv run launcher release upload
 ```
 
-This is the recommended upload step because it uses the configured repository and the signed manifest's archive metadata.
-The packaged launcher expects all three files to be available as release assets.
-
-If you need to upload the generated files manually, the equivalent CLI commands are:
+GitHub upload uses:
 
 ```bash
 gh release upload v1.2.3 \
@@ -367,42 +240,16 @@ gh release upload v1.2.3 \
   dist/launcher-manifest.yml \
   dist/launcher-manifest.yml.sig \
   --clobber
+```
 
+GitLab upload uses:
+
+```bash
 glab release upload v1.2.3 \
   dist/myapp-v1.2.3.zip \
   dist/launcher-manifest.yml \
-  dist/launcher-manifest.yml.sig
+  dist/launcher-manifest.yml.sig \
+  --use-package-registry
 ```
 
-For more options, see [`gh release upload`](https://cli.github.com/manual/gh_release_upload)
-and [`glab release upload`](https://docs.gitlab.com/cli/release/upload/).
-
-Users do not need a new launcher build for every app change. The launcher will
-find the new release, verify it, download it, and start it.
-
-If `dist/` contains more than one archive, if the archive filename does not
-contain the version, or if you want the release process to be fully explicit,
-pass the same archive to all three Launcher commands and pass the version to
-`sign`:
-
-```bash
-uv run launcher release archive v1.2.3 \
-  --config packaging/launcher/application.yml \
-  --archive dist/myapp-v1.2.3.zip
-uv run launcher release sign \
-  --config packaging/launcher/application.yml \
-  --archive dist/myapp-v1.2.3.zip \
-  --version v1.2.3
-uv run launcher release verify \
-  --config packaging/launcher/application.yml \
-  --archive dist/myapp-v1.2.3.zip
-uv run launcher release upload \
-  --config packaging/launcher/application.yml \
-  --archive dist/myapp-v1.2.3.zip
-```
-
-During development, run the launcher from source with:
-
-```bash
-uv run launcher run
-```
+After these files are published, users can open the existing launcher and it will find, verify, install, and start the new app release.
