@@ -10,7 +10,7 @@ It adds two useful features to your packaged app:
 - **startup UX:** it can show progress while downloading or preparing the
   environment, and it can ask for proxy settings when the network requires them.
 
-PyInstaller or cx-Freeze package the stable launcher. Your real app keeps
+PyInstaller packages the stable launcher. Your real app keeps
 shipping as normal GitHub or GitLab releases.
 
 ## Why Use This?
@@ -23,7 +23,7 @@ Launcher separates the executable you give to users from the application code
 you keep releasing:
 
 1. add Launcher as a dev dependency in your app repo;
-2. initialize `packaging/launcher/`;
+2. initialize Launcher packaging with `uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git`;
 3. build and sign the launcher executable;
 4. publish releases of your app source code;
 5. run `launcher release archive`, `sign`, `verify`, and `upload` for each app release;
@@ -54,7 +54,7 @@ In your app repository:
 
 ```bash
 uv add --dev launcher
-uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git
+uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git 
 ```
 
 This creates:
@@ -67,16 +67,6 @@ packaging/
     `-- icon_128x128.png
 ```
 
-The SVG is editable source artwork. The PNG is the default build icon.
-To package a custom app icon, pass a PyInstaller-compatible icon:
-
-```bash
-uv run launcher init --icon path/to/app.icns
-```
-
-On macOS, `.icns` is the native icon format and is preferred for polished
-releases, but `.png` can be used.
-
 Edit `packaging/launcher/application.yml`, then create the signing key:
 
 ```bash
@@ -84,16 +74,10 @@ uv run launcher config check
 uv run launcher release keygen
 ```
 
-The config starts the app through an `entrypoint`. Use `script` for a Python
-file, `module` for `python -m ...`, or `project` for an installed console
-command.
-
 The `config check` command ensures the configuration is valid.
 The `release keygen` command writes `launcher-signing-key.pem`,
 adds it to `.gitignore`, and prints the public key. Replace `trust.public_key` in
 `packaging/launcher/application.yml` with that printed value.
-When `repository` is set, Launcher infers the normal GitHub/GitLab release asset URLs for the app archive, `launcher-manifest.yml`, and `launcher-manifest.yml.sig`.
-Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, or endpoint-only configs that do not set `repository`.
 
 Then build the launcher:
 
@@ -105,7 +89,26 @@ The launcher build is written under `dist/launcher/`. It is separate from app
 release artifacts and only needs to be rebuilt when launcher config, assets, or
 tooling change.
 
-For each app release, build the app-owned release archive into `dist/` and run:
+For each app release, build the app-owned release archive into `dist/`:
+
+Create the GitHub (with `gh`) or GitLab (with `glab`) release for the tag you want users to run.
+
+```bash
+git tag v1.2.3
+```
+
+```bash
+gh release create v1.2.3 --generate-notes
+```
+
+or
+
+```bash
+glab release create v1.2.3 --notes "Release v1.2.3"
+```
+
+
+Then, run:
 
 ```bash
 uv run launcher release archive v1.2.3
@@ -114,8 +117,7 @@ uv run launcher release verify
 uv run launcher release upload
 ```
 
-The release commands use `packaging/launcher/application.yml` by default and
-write:
+The release commands generate:
 
 ```text
 dist/
