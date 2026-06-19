@@ -1285,3 +1285,271 @@ def test_upload_github_cli_failure_explains_release_prerequisites(tmp_path, monk
     assert "gh release create v1.2.3" in message
     assert "git push origin v1.2.3" in message
     assert "gh auth status" in message
+
+
+def test_compose_release_notes_passes_user_notes_through_when_no_downloads(tmp_path, monkeypatch):
+    """User-authored notes should be unchanged when no launcher downloads are available."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("## Changes\n\n- Fixed startup\n")
+
+    generated = release_cli.compose_release_notes(version="v1.2.3", notes_path=notes)
+
+    assert generated == "## Changes\n\n- Fixed startup\n"
+
+
+def test_compose_release_notes_appends_launcher_download_block(tmp_path, monkeypatch):
+    """Release notes should include a Launcher-managed download block when URLs exist."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("User notes\n")
+    distribution = tmp_path / "packaging" / "launcher" / "distribution.yml"
+    distribution.parent.mkdir(parents=True)
+    distribution.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "launcher_downloads": {
+                    "macos-arm64": {
+                        "version": "v1.2.2",
+                        "asset": "MyApp-launcher-v1.2.2-macos-arm64.zip",
+                        "url": "https://example.com/old.zip",
+                    },
+                    "linux-x64": {
+                        "version": "v1.2.3",
+                        "asset": "MyApp-launcher-v1.2.3-linux-x64.zip",
+                        "url": "https://example.com/linux.zip",
+                    },
+                },
+            },
+            sort_keys=False,
+        )
+    )
+
+    generated = release_cli.compose_release_notes(version="v1.2.3", notes_path=notes)
+
+    assert generated.startswith("User notes\n")
+    assert "## Launcher Downloads" in generated
+    assert "- linux-x64: [MyApp-launcher-v1.2.3-linux-x64.zip](https://example.com/linux.zip)" in generated
+    assert "- macos-arm64: [MyApp-launcher-v1.2.2-macos-arm64.zip](https://example.com/old.zip)" in generated
+
+
+def test_compose_release_notes_prefers_local_current_version_packages(tmp_path, monkeypatch):
+    """Local packages for the release version should override stored distribution URLs."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("User notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    (app_dir / "distribution.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "launcher_downloads": {
+                    "linux-x64": {
+                        "version": "v1.2.2",
+                        "asset": "MyApp-launcher-v1.2.2-linux-x64.zip",
+                        "url": "https://example.com/old-linux.zip",
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    local_asset = tmp_path / "dist" / "MyApp-launcher-v1.2.3-linux-x64.zip"
+    local_asset.parent.mkdir()
+    local_asset.write_bytes(b"zip")
+
+    generated = release_cli.compose_release_notes(version="v1.2.3", notes_path=notes)
+
+    assert "old-linux.zip" not in generated
+    assert (
+        "- linux-x64: [MyApp-launcher-v1.2.3-linux-x64.zip]"
+        "(https://github.com/my-org/myapp/releases/download/v1.2.3/MyApp-launcher-v1.2.3-linux-x64.zip)"
+    ) in generated
+
+
+def test_compose_release_notes_escapes_local_package_asset_urls(tmp_path, monkeypatch):
+    """Generated launcher download links should percent-encode asset filenames."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("User notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: My App\nrepository: https://github.com/my-org/myapp.git\n")
+    local_asset = tmp_path / "dist" / "My App-launcher-v1.2.3-linux-x64.zip"
+    local_asset.parent.mkdir()
+    local_asset.write_bytes(b"zip")
+
+    generated = release_cli.compose_release_notes(version="v1.2.3", notes_path=notes)
+
+    assert "[My App-launcher-v1.2.3-linux-x64.zip]" in generated
+    assert "My%20App-launcher-v1.2.3-linux-x64.zip" in generated
+
+
+def test_release_create_github_uses_verify_tag_and_generated_notes(tmp_path, monkeypatch):
+    """GitHub release creation should verify the existing tag and use generated notes."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+
+    plan = release_cli.plan_create_release(version="v1.2.3", notes_path=notes)
+
+    assert plan.command == [
+        str(gh),
+        "release",
+        "create",
+        "v1.2.3",
+        "--verify-tag",
+        "--notes-file",
+        str(plan.notes_file),
+    ]
+    assert plan.notes_file.read_text() == "Release notes\n"
+
+
+def test_release_create_gitlab_refuses_when_remote_tag_missing(tmp_path, monkeypatch):
+    """GitLab release creation must preflight the remote tag instead of letting glab create it."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://gitlab.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text("")
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+
+    def fake_git_stdout(args, cwd=None):
+        if args[:2] == ["ls-remote", "--exit-code"]:
+            raise release_cli.ReleaseCliError("missing remote tag")
+        return "ok"
+
+    monkeypatch.setattr(release_cli, "git_stdout", fake_git_stdout)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Remote tag v1.2.3 was not found"):
+        release_cli.plan_create_release(version="v1.2.3", notes_path=notes)
+
+
+def test_release_create_gitlab_title_uses_name_flag(tmp_path, monkeypatch):
+    """GitLab release titles should use the glab --name flag."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://gitlab.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text("")
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+
+    plan = release_cli.plan_create_release(version="v1.2.3", notes_path=notes, title="MyApp 1.2.3")
+
+    assert plan.command[-2:] == ["--name", "MyApp 1.2.3"]
+
+
+def test_release_create_tag_and_push_are_explicit(tmp_path, monkeypatch):
+    """Local tags and remote pushes should only run when requested."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+    calls = []
+    monkeypatch.setattr(release_cli, "run_git", lambda args, cwd: calls.append(args))
+    monkeypatch.setattr(release_cli, "run_release_create_command", lambda command, provider, version, repository: "")
+
+    release_cli.create_release(version="v1.2.3", notes_path=notes, tag=False, push=False)
+    assert calls == []
+
+    release_cli.create_release(version="v1.2.3", notes_path=notes, tag=True, push=True, dry_run=False)
+    assert calls == [["tag", "v1.2.3"], ["push", "origin", "v1.2.3"]]
+
+
+def test_release_create_dry_run_with_push_does_not_require_remote_tag(tmp_path, monkeypatch):
+    """Dry-run with --push should plan the push instead of requiring it to have happened."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+
+    def fake_git_stdout(args, cwd=None):
+        if args[:2] == ["ls-remote", "--exit-code"]:
+            raise AssertionError("remote tag preflight should be skipped when --push is planned")
+        return "ok"
+
+    monkeypatch.setattr(release_cli, "git_stdout", fake_git_stdout)
+
+    commands = release_cli.create_release(version="v1.2.3", notes_path=notes, tag=True, push=True, dry_run=True)
+
+    assert commands[0] == ["git", "tag", "v1.2.3"]
+    assert commands[1] == ["git", "push", "origin", "v1.2.3"]
+    assert commands[2][1:4] == ["release", "create", "v1.2.3"]
+
+
+def test_release_create_dry_run_prints_planned_command_without_provider_call(tmp_path, monkeypatch, capsys):
+    """Dry-run release creation should show the provider command and skip release creation."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("provider CLI should not run")
+
+    monkeypatch.setattr(release_cli, "run_release_create_command", fail)
+
+    result = release_cli.main(["create", "v1.2.3", "--notes", str(notes), "--dry-run"])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Dry run: planned GitHub release creation for v1.2.3." in output
+    assert "gh release create v1.2.3 --verify-tag --notes-file" in output

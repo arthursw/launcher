@@ -1,148 +1,60 @@
 # Launcher
 
-Launcher helps Python developers ship desktop apps without rebuilding and
-re-signing the app for every release.
+Launcher is a small stable executable that starts and updates a Python desktop app.
 
-It adds two useful features to your packaged app:
+You package and sign Launcher when the executable, bundled config, icon, or launcher tooling changes.
+Your app code ships separately as signed GitHub or GitLab release assets.
 
-- **updates and versions:** it finds the app version to run, downloads it,
-  verifies it, and keeps track of what is installed;
-- **startup UX:** it can show progress while downloading or preparing the
-  environment, and it can ask for proxy settings when the network requires them.
+That split keeps normal app releases small:
 
-PyInstaller or cx-Freeze package the stable launcher. Your real app keeps
-shipping as normal GitHub or GitLab releases.
+- the launcher executable is the durable file users install;
+- the app release archive is the versioned source bundle Launcher downloads, verifies, installs, and runs;
+- the signed manifest tells Launcher which archive belongs to each app release.
 
-## Why Use This?
+## Minimal Workflow
 
-Packaging Python apps can be slow and frustrating. A tiny code change often
-means building a new executable, testing the bundle again, and redistributing a
-large file.
-
-Launcher separates the executable you give to users from the application code
-you keep releasing:
-
-1. add Launcher as a dev dependency in your app repo;
-2. initialize `packaging/launcher/`;
-3. build and sign the launcher executable;
-4. publish releases of your app source code;
-5. run `launcher release archive`, `sign`, `verify`, and `upload` for each app release;
-6. users open the launcher;
-7. the launcher updates and starts the app.
-
-## What Happens When The User Opens It?
-
-Launcher:
-
-1. reads the app configuration packaged with the launcher;
-2. checks which app version should run;
-3. securely downloads and verifies the app sources; (*)
-4. shows progress if startup takes time;
-5. asks for proxy settings if it cannot reach the internet;
-6. creates or updates the Python environment;
-7. starts your app;
-8. exits without killing the app.
-
-(*) Security note: the launcher does not blindly run downloaded code. Each
-release must provide a signed manifest. The launcher verifies that signature,
-then verifies that the downloaded archive matches the hash written in the signed
-manifest. See [docs/security.md](docs/security.md).
-
-## Minimal Packaging Workflow
-
-In your app repository:
+Initialize an app repository:
 
 ```bash
 uv add --dev launcher
 uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git
-```
-
-This creates:
-
-```text
-packaging/
-`-- launcher/
-    |-- application.yml
-    |-- launcher.svg
-    `-- icon_128x128.png
-```
-
-The SVG is editable source artwork. The PNG is the default build icon.
-To package a custom app icon, pass a PyInstaller-compatible icon:
-
-```bash
-uv run launcher init --icon path/to/app.icns
-```
-
-On macOS, `.icns` is the native icon format and is preferred for polished
-releases, but `.png` can be used.
-
-Edit `packaging/launcher/application.yml`, then create the signing key:
-
-```bash
 uv run launcher config check
 uv run launcher release keygen
 ```
 
-The config starts the app through an `entrypoint`. Use `script` for a Python
-file, `module` for `python -m ...`, or `project` for an installed console
-command.
-
-The `config check` command ensures the configuration is valid.
-The `release keygen` command writes `launcher-signing-key.pem`,
-adds it to `.gitignore`, and prints the public key. Replace `trust.public_key` in
-`packaging/launcher/application.yml` with that printed value.
-When `repository` is set, Launcher infers the normal GitHub/GitLab release asset URLs for the app archive, `launcher-manifest.yml`, and `launcher-manifest.yml.sig`.
-Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, or endpoint-only configs that do not set `repository`.
-
-Then build the launcher:
+Build the launcher executable when it changes:
 
 ```bash
-uv run --with pyinstaller launcher build
+uv run launcher build
+# sign/notarize the built launcher here
+uv run launcher build package --version v1.2.3
+uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher build upload --version v1.2.3
 ```
 
-The launcher build is written under `dist/launcher/`. It is separate from app
-release artifacts and only needs to be rebuilt when launcher config, assets, or
-tooling change.
-
-For each app release, build the app-owned release archive into `dist/` and run:
+Publish a normal app-only release:
 
 ```bash
+uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
 uv run launcher release archive v1.2.3
 uv run launcher release sign
 uv run launcher release verify
 uv run launcher release upload
 ```
 
-The release commands use `packaging/launcher/application.yml` by default and
-write:
+Only run `launcher build package` and `launcher build upload` for releases where the launcher executable changed.
+For ordinary app changes, publish the app archive, manifest, and signature.
 
-```text
-dist/
-|-- myapp-v1.2.3.zip
-|-- launcher-manifest.yml
-`-- launcher-manifest.yml.sig
-```
+## Learn More
 
-Upload publishes all three files as release assets. `upload` uses the official GitHub or GitLab CLI if it is installed and already authenticated.
+- [Packaging guide](docs/packaging.md)
+- [Configuration guide](docs/configuration.md)
+- [Security guide](docs/security.md)
 
-## Learn The Pieces
-
-- [Packaging guide](docs/packaging.md): how to build a launcher for your app.
-- [Configuration guide](docs/configuration.md): what goes in
-  `packaging/launcher/application.yml`.
-- [Security guide](docs/security.md): why signed manifests are needed.
-
-## Developing Launcher Itself
+## Development
 
 ```bash
 uv sync
 uv run pytest
 uv run ruff check .
-```
-
-Run from source:
-
-```bash
-uv run launcher run -c packaging/launcher/application.yml
 ```

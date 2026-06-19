@@ -10,10 +10,12 @@ import sys
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Sequence
+from urllib.parse import quote
 from urllib.parse import urlparse
 import zipfile
 
@@ -33,6 +35,7 @@ DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_PRIVATE_KEY = Path("launcher-signing-key.pem")
 DEFAULT_MANIFEST_NAME = "launcher-manifest.yml"
 DEFAULT_SIGNATURE_NAME = "launcher-manifest.yml.sig"
+DEFAULT_DISTRIBUTION_PATH = Path("packaging/launcher/distribution.yml")
 ARCHIVE_SUFFIXES = (".zip",)
 
 
@@ -88,6 +91,17 @@ class ReleaseUploadPlan:
     archive: Path
     manifest_path: Path
     signature_path: Path
+
+
+@dataclass(frozen=True)
+class ReleaseCreatePlan:
+    """Verified release creation command and generated notes path."""
+
+    version: str
+    provider: str
+    repository: str | None
+    command: list[str]
+    notes_file: Path
 
 
 def keygen(private_key_path: Path = DEFAULT_PRIVATE_KEY, force: bool = False) -> str:
@@ -429,6 +443,263 @@ def upload_release(
 
     run_upload_command(plan.command, provider=plan.provider, version=plan.version, repository=plan.repository)
     return [plan.command]
+
+
+def create_release(
+    *,
+    version: str,
+    notes_path: Path,
+    config_path: Path | None = None,
+    repository: str | None = None,
+    title: str | None = None,
+    tag: bool = False,
+    push: bool = False,
+    remote: str = "origin",
+    dry_run: bool = False,
+) -> list[list[str]]:
+    """Create a provider release with generated release notes."""
+    repo_root = git_repo_root()
+    preliminary_commands: list[list[str]] = []
+    if tag:
+        tag_command = ["tag", version]
+        preliminary_commands.append(["git", *tag_command])
+        if not dry_run:
+            run_git(tag_command, cwd=repo_root)
+    if push:
+        push_command = ["push", remote, version]
+        preliminary_commands.append(["git", *push_command])
+        if not dry_run:
+            run_git(push_command, cwd=repo_root)
+
+    plan = plan_create_release(
+        version=version,
+        notes_path=notes_path,
+        config_path=config_path,
+        repository=repository,
+        title=title,
+        remote=remote,
+        require_existing_tag=not tag,
+        require_remote_tag=not push,
+    )
+    if dry_run:
+        return [*preliminary_commands, plan.command]
+
+    run_release_create_command(plan.command, provider=plan.provider, version=plan.version, repository=plan.repository)
+    return [*preliminary_commands, plan.command]
+
+
+def plan_create_release(
+    *,
+    version: str,
+    notes_path: Path,
+    config_path: Path | None = None,
+    repository: str | None = None,
+    title: str | None = None,
+    remote: str = "origin",
+    require_existing_tag: bool = True,
+    require_remote_tag: bool = True,
+) -> ReleaseCreatePlan:
+    """Build the provider command for creating a release."""
+    repo_root = git_repo_root()
+    if require_existing_tag:
+        require_local_tag(version, repo_root)
+    if require_remote_tag:
+        require_remote_tag_exists(version, remote, repo_root)
+
+    release_config = load_release_config(config_path)
+    repository = repository or release_config.repository
+    provider = detect_repository_provider(repository)
+    if not provider:
+        raise ReleaseCliError("Cannot detect GitHub or GitLab repository. Pass --repository or configure repository.")
+
+    generated_notes = compose_release_notes(
+        version=version,
+        notes_path=notes_path,
+        config_path=config_path,
+        repository=repository,
+    )
+    notes_file = write_generated_notes(version, generated_notes)
+    if provider == "github":
+        command = [
+            require_executable(
+                "gh",
+                "GitHub release creation requires the GitHub CLI (`gh`). Install it from https://github.com/cli/cli#installation.",
+            ),
+            "release",
+            "create",
+            version,
+            "--verify-tag",
+            "--notes-file",
+            str(notes_file),
+        ]
+    else:
+        command = [
+            require_executable(
+                "glab",
+                "GitLab release creation requires the GitLab CLI (`glab`). Install it from https://gitlab.com/gitlab-org/cli/#installation.",
+            ),
+            "release",
+            "create",
+            version,
+            "--notes-file",
+            str(notes_file),
+        ]
+    if title:
+        if provider == "github":
+            command.extend(["--title", title])
+        else:
+            command.extend(["--name", title])
+    return ReleaseCreatePlan(version=version, provider=provider, repository=repository, command=command, notes_file=notes_file)
+
+
+def compose_release_notes(
+    *,
+    version: str,
+    notes_path: Path,
+    config_path: Path | None = None,
+    repository: str | None = None,
+    distribution_path: Path = DEFAULT_DISTRIBUTION_PATH,
+    dist_dir: Path = DEFAULT_DIST_DIR,
+) -> str:
+    """Return user notes with a Launcher-managed download block when URLs exist."""
+    notes = notes_path.expanduser().read_text()
+    downloads = launcher_downloads_for_notes(
+        version=version,
+        config_path=config_path,
+        repository=repository,
+        distribution_path=distribution_path,
+        dist_dir=dist_dir,
+    )
+    if not downloads:
+        return notes
+
+    block = ["", "## Launcher Downloads", ""]
+    for platform_id in sorted(downloads):
+        item = downloads[platform_id]
+        block.append(f"- {platform_id}: [{item['asset']}]({item['url']})")
+    return notes.rstrip() + "\n" + "\n".join(block) + "\n"
+
+
+def launcher_downloads_for_notes(
+    *,
+    version: str,
+    config_path: Path | None,
+    repository: str | None,
+    distribution_path: Path,
+    dist_dir: Path,
+) -> dict[str, dict[str, str]]:
+    """Merge stored launcher downloads with local packages for this release."""
+    downloads = load_launcher_distribution(distribution_path)
+    release_config = load_release_config(config_path)
+    repository = repository or release_config.repository
+    for asset in local_launcher_packages(version, dist_dir):
+        platform_id = platform_id_from_launcher_asset(asset, version)
+        if repository:
+            downloads[platform_id] = {
+                "version": version,
+                "asset": asset.name,
+                "url": launcher_asset_url(repository, version, asset.name),
+            }
+    return {key: value for key, value in downloads.items() if value.get("url") and value.get("asset")}
+
+
+def load_launcher_distribution(path: Path = DEFAULT_DISTRIBUTION_PATH) -> dict[str, dict[str, str]]:
+    """Read stored launcher download metadata."""
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text()) or {}
+    if data.get("schema_version") != 1:
+        raise ReleaseCliError(f"Unsupported distribution metadata schema in {path}")
+    downloads = data.get("launcher_downloads") or {}
+    if not isinstance(downloads, dict):
+        raise ReleaseCliError("distribution.yml launcher_downloads must be a mapping")
+    result: dict[str, dict[str, str]] = {}
+    for platform_id, item in downloads.items():
+        if isinstance(platform_id, str) and isinstance(item, dict):
+            asset = item.get("asset")
+            url = item.get("url")
+            item_version = item.get("version")
+            if isinstance(asset, str) and isinstance(url, str):
+                result[platform_id] = {
+                    "version": item_version if isinstance(item_version, str) else "",
+                    "asset": asset,
+                    "url": url,
+                }
+    return result
+
+
+def local_launcher_packages(version: str, dist_dir: Path = DEFAULT_DIST_DIR) -> list[Path]:
+    """Return local launcher packages for a release version."""
+    if not dist_dir.exists():
+        return []
+    return sorted(dist_dir.glob(f"*-launcher-{version}-*.zip"))
+
+
+def platform_id_from_launcher_asset(asset: Path, version: str) -> str:
+    """Infer a platform id from a launcher package filename."""
+    marker = f"-launcher-{version}-"
+    if marker not in asset.name or not asset.name.endswith(".zip"):
+        raise ReleaseCliError(f"Cannot infer platform id from launcher package name: {asset.name}")
+    return asset.name.split(marker, 1)[1].removesuffix(".zip")
+
+
+def launcher_asset_url(repository: str, version: str, asset_name: str) -> str:
+    """Infer the public release download URL for one launcher package."""
+    provider = detect_repository_provider(repository)
+    cleaned = repository.rstrip("/").removesuffix(".git")
+    encoded_asset_name = quote(asset_name, safe="")
+    if provider == "gitlab":
+        return f"{cleaned}/-/releases/{version}/downloads/{encoded_asset_name}"
+    if provider == "github":
+        return f"{cleaned}/releases/download/{version}/{encoded_asset_name}"
+    raise ReleaseCliError("Cannot infer launcher asset URL without a GitHub or GitLab repository.")
+
+
+def write_generated_notes(version: str, notes: str) -> Path:
+    """Write generated release notes to a stable temporary file."""
+    notes_dir = Path(tempfile.mkdtemp(prefix="launcher-release-notes-"))
+    notes_file = notes_dir / f"{version}-notes.md"
+    notes_file.write_text(notes)
+    return notes_file
+
+
+def require_local_tag(version: str, repo_root: Path) -> None:
+    """Require a local tag to exist."""
+    try:
+        git_stdout(["rev-parse", f"refs/tags/{version}^{{tag}}"], cwd=repo_root)
+    except ReleaseCliError:
+        try:
+            git_stdout(["rev-parse", f"refs/tags/{version}^{{commit}}"], cwd=repo_root)
+        except ReleaseCliError as e:
+            raise ReleaseCliError(f"Local tag {version} was not found. Pass --tag to create it at HEAD.") from e
+
+
+def require_remote_tag_exists(version: str, remote: str, repo_root: Path) -> None:
+    """Require the release tag to exist on the configured remote."""
+    try:
+        git_stdout(["ls-remote", "--exit-code", "--tags", remote, f"refs/tags/{version}"], cwd=repo_root)
+    except ReleaseCliError as e:
+        raise ReleaseCliError(
+            f"Remote tag {version} was not found on {remote}. Pass --push to push it, or push it manually first."
+        ) from e
+
+
+def run_release_create_command(command: list[str], *, provider: str, version: str, repository: str | None) -> str:
+    """Run a provider release creation command."""
+    try:
+        result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        provider_name = release_provider_name(provider)
+        output = combine_process_output(e.stdout, e.stderr)
+        output_section = f"\n\nProvider output:\n{output}" if output else ""
+        repository_hint = f"\nRepository: {repository}" if repository else ""
+        raise ReleaseCliError(
+            f"{provider_name} release creation failed with exit code {e.returncode}.\n\n"
+            f"Command:\n  {format_shell_command(command)}"
+            f"{repository_hint}"
+            f"{output_section}"
+        ) from e
+    return combine_process_output(result.stdout, result.stderr)
 
 
 def plan_upload_release(
@@ -1075,6 +1346,21 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     keygen_parser.add_argument("--private-key", type=Path, default=DEFAULT_PRIVATE_KEY)
     keygen_parser.add_argument("--force", action="store_true", help="Overwrite an existing private key")
 
+    create_parser = subparsers.add_parser("create", help="Create the provider release")
+    create_parser.add_argument("version", help="Release version or tag, for example v1.2.3")
+    create_parser.add_argument("--notes", type=Path, required=True, help="User-authored release notes Markdown file")
+    create_parser.add_argument("--config", type=Path, help=f"Launcher app config (default: {DEFAULT_CONFIG_PATH})")
+    create_parser.add_argument("--repository", help="Repository URL used to detect GitHub or GitLab")
+    create_parser.add_argument("--title", help="Provider release title")
+    create_parser.add_argument(
+        "--tag",
+        action="store_true",
+        help="Create a local lightweight tag at HEAD before creating the release",
+    )
+    create_parser.add_argument("--push", action="store_true", help="Push the release tag before creating the release")
+    create_parser.add_argument("--remote", default="origin", help="Git remote used for tag preflight and push")
+    create_parser.add_argument("--dry-run", action="store_true", help="Print planned commands without creating the release")
+
     archive_parser = subparsers.add_parser("archive", help="Build the app archive for release signing")
     archive_parser.add_argument("version", help="Release version or git ref, for example v1.2.3")
     archive_parser.add_argument("--config", type=Path, help=f"Launcher app config (default: {DEFAULT_CONFIG_PATH})")
@@ -1141,6 +1427,34 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
                 archive=args.archive,
             )
             print(f"Archive written to: {archive_path}")
+            return 0
+
+        if args.command == "create":
+            commands = create_release(
+                version=args.version,
+                notes_path=args.notes,
+                config_path=args.config,
+                repository=args.repository,
+                title=args.title,
+                tag=args.tag,
+                push=args.push,
+                remote=args.remote,
+                dry_run=args.dry_run,
+            )
+            provider = detect_repository_provider(args.repository or load_release_config(args.config).repository)
+            provider_name = release_provider_name(provider or "github")
+            if args.dry_run:
+                print(f"Dry run: planned {provider_name} release creation for {args.version}.")
+                print("No release was created.")
+                print("Commands:")
+                for command in commands:
+                    print(f"  {format_shell_command(command)}")
+                return 0
+
+            print(f"Release created: {args.version}")
+            print("Commands:")
+            for command in commands:
+                print(f"  {format_shell_command(command)}")
             return 0
 
         if args.command == "sign":

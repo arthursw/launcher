@@ -6,16 +6,24 @@ import argparse
 import platform
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import quote
+
+import yaml
 
 from .config import load_config
+from .release_cli import detect_repository_provider
 
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_OUTPUT_DIR = Path("dist/launcher")
+DEFAULT_PACKAGE_DIR = Path("dist")
+DEFAULT_DISTRIBUTION_PATH = Path("packaging/launcher/distribution.yml")
 DEFAULT_BUILD_DIR_NAME = "build"
 DEFAULT_SPEC_NAME = "launcher.spec"
 DEFAULT_ENTRY_NAME = "launcher_build_entry.py"
@@ -33,6 +41,20 @@ class BuildPlan:
     datas: list[tuple[str, str]]
     icon_path: Path | None = None
     uses_custom_spec: bool = False
+
+
+@dataclass(frozen=True)
+class LauncherUploadPlan:
+    """Resolved launcher package upload command and metadata."""
+
+    version: str
+    provider: str
+    repository: str | None
+    command: list[str]
+    asset: Path
+    platform_id: str
+    asset_url: str
+    distribution_path: Path
 
 
 class BuildCliError(Exception):
@@ -192,6 +214,268 @@ def run_pyinstaller(plan: BuildPlan) -> None:
         ) from e
 
 
+def package_launcher(
+    *,
+    version: str,
+    config_path: Path | None = None,
+    build_output_dir: Path = DEFAULT_OUTPUT_DIR,
+    out_dir: Path = DEFAULT_PACKAGE_DIR,
+    platform_id: str | None = None,
+) -> Path:
+    """Package an already-built launcher executable into a distributable zip."""
+    plan = create_build_plan(config_path=config_path, output_dir=build_output_dir)
+    platform_id = platform_id or current_platform_id()
+    out_dir = out_dir.expanduser()
+    artifact = out_dir / f"{plan.app_name}-launcher-{version}-{platform_id}.zip"
+    if not artifact.is_absolute():
+        artifact = Path.cwd() / artifact
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    if artifact.exists():
+        artifact.unlink()
+
+    app_bundle = plan.output_dir / f"{plan.app_name}.app"
+    directory_build = plan.output_dir / _executable_name(plan.app_name)
+    if platform.system() == "Darwin" and app_bundle.is_dir():
+        run_ditto(app_bundle, artifact)
+    elif directory_build.is_dir():
+        write_directory_zip(directory_build, artifact)
+    else:
+        raise BuildCliError(
+            f"No launcher build output found in {plan.output_dir}.\n"
+            "Run `launcher build` first, then sign and notarize the launcher executable before packaging it."
+        )
+    return display_path(artifact)
+
+
+def run_ditto(source: Path, destination: Path) -> None:
+    """Create a macOS zip while preserving bundle metadata."""
+    command = ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(source), str(destination)]
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError as e:
+        raise BuildCliError("ditto is required to package macOS .app bundles.") from e
+    except subprocess.CalledProcessError as e:
+        raise BuildCliError(f"ditto failed with exit code {e.returncode}: {format_shell_command(command)}") from e
+
+
+def write_directory_zip(source: Path, destination: Path) -> None:
+    """Zip a directory-style PyInstaller build with stable member names."""
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(source.rglob("*")):
+            member = path.relative_to(source.parent).as_posix()
+            if path.is_symlink():
+                info = zipfile.ZipInfo(member)
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                zf.writestr(info, path.readlink().as_posix())
+                continue
+            if path.is_file():
+                zf.write(path, member)
+
+
+def upload_launcher_package(
+    *,
+    version: str,
+    config_path: Path | None = None,
+    repository: str | None = None,
+    asset: Path | None = None,
+    platform_id: str | None = None,
+    dist_dir: Path = DEFAULT_PACKAGE_DIR,
+    distribution_path: Path = DEFAULT_DISTRIBUTION_PATH,
+    dry_run: bool = False,
+) -> list[list[str]]:
+    """Upload a launcher package and update distribution metadata after success."""
+    plan = plan_upload_launcher_package(
+        version=version,
+        config_path=config_path,
+        repository=repository,
+        asset=asset,
+        platform_id=platform_id,
+        dist_dir=dist_dir,
+        distribution_path=distribution_path,
+    )
+    if dry_run:
+        return [plan.command]
+
+    run_launcher_upload_command(plan.command, provider=plan.provider, version=plan.version, repository=plan.repository)
+    update_distribution_metadata(plan)
+    return [plan.command]
+
+
+def plan_upload_launcher_package(
+    *,
+    version: str,
+    config_path: Path | None = None,
+    repository: str | None = None,
+    asset: Path | None = None,
+    platform_id: str | None = None,
+    dist_dir: Path = DEFAULT_PACKAGE_DIR,
+    distribution_path: Path = DEFAULT_DISTRIBUTION_PATH,
+) -> LauncherUploadPlan:
+    """Build the provider command for uploading one launcher package."""
+    config = load_config((config_path or DEFAULT_CONFIG_PATH).expanduser())
+    repository = repository or config.repository
+    provider = detect_repository_provider(repository)
+    if not provider:
+        raise BuildCliError("Cannot detect GitHub or GitLab repository. Pass --repository or configure repository.")
+
+    resolved_asset = infer_launcher_asset(version=version, asset=asset, platform_id=platform_id, dist_dir=dist_dir)
+    platform_id = platform_id or platform_id_from_asset(resolved_asset, version)
+    if provider == "github":
+        command = [
+            require_executable("gh", "GitHub launcher upload requires the GitHub CLI (`gh`)."),
+            "release",
+            "upload",
+            version,
+            str(resolved_asset),
+            "--clobber",
+        ]
+    else:
+        command = [
+            require_executable("glab", "GitLab launcher upload requires the GitLab CLI (`glab`)."),
+            "release",
+            "upload",
+            version,
+            str(resolved_asset),
+            "--use-package-registry",
+        ]
+
+    return LauncherUploadPlan(
+        version=version,
+        provider=provider,
+        repository=repository,
+        command=command,
+        asset=resolved_asset,
+        platform_id=platform_id,
+        asset_url=launcher_asset_url(repository or "", version, resolved_asset.name),
+        distribution_path=distribution_path,
+    )
+
+
+def run_launcher_upload_command(command: list[str], *, provider: str, version: str, repository: str | None) -> str:
+    """Run the launcher package upload command."""
+    try:
+        result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        provider_name = "GitHub" if provider == "github" else "GitLab"
+        output = "\n".join(part for part in (e.stdout, e.stderr) if part).strip()
+        output_detail = f"\n\nProvider output:\n{output}" if output else ""
+        repository_detail = f"\nRepository: {repository}" if repository else ""
+        raise BuildCliError(
+            f"{provider_name} launcher upload failed with exit code {e.returncode}.\n\n"
+            f"Command:\n  {format_shell_command(command)}"
+            f"{repository_detail}"
+            f"{output_detail}"
+        ) from e
+    return "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+
+
+def update_distribution_metadata(plan: LauncherUploadPlan) -> None:
+    """Persist the latest launcher download URL for one platform."""
+    data = load_distribution_metadata(plan.distribution_path)
+    downloads = data.setdefault("launcher_downloads", {})
+    downloads[plan.platform_id] = {
+        "version": plan.version,
+        "asset": plan.asset.name,
+        "url": plan.asset_url,
+    }
+    plan.distribution_path.parent.mkdir(parents=True, exist_ok=True)
+    plan.distribution_path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def load_distribution_metadata(path: Path = DEFAULT_DISTRIBUTION_PATH) -> dict:
+    """Read distribution metadata, returning an empty schema when absent."""
+    if not path.exists():
+        return {"schema_version": 1, "launcher_downloads": {}}
+    data = yaml.safe_load(path.read_text()) or {}
+    if data.get("schema_version") != 1:
+        raise BuildCliError(f"Unsupported distribution metadata schema in {path}")
+    downloads = data.get("launcher_downloads")
+    if downloads is None:
+        data["launcher_downloads"] = {}
+    elif not isinstance(downloads, dict):
+        raise BuildCliError("distribution.yml launcher_downloads must be a mapping")
+    return data
+
+
+def infer_launcher_asset(
+    *,
+    version: str,
+    asset: Path | None,
+    platform_id: str | None,
+    dist_dir: Path,
+) -> Path:
+    """Resolve the launcher package asset to upload."""
+    if asset:
+        asset = asset.expanduser()
+        if not asset.is_file():
+            raise BuildCliError(f"Launcher package not found: {asset}")
+        return display_path(asset)
+
+    dist_dir = dist_dir.expanduser()
+    candidates = sorted(dist_dir.glob(f"*-launcher-{version}-*.zip")) if dist_dir.exists() else []
+    if platform_id:
+        candidates = [path for path in candidates if path.name.endswith(f"-{platform_id}.zip")]
+    if len(candidates) == 1:
+        return display_path(candidates[0])
+    if not candidates:
+        raise BuildCliError(
+            f"No launcher package found for {version} in {dist_dir}. "
+            f"Run `launcher build package --version {version}`."
+        )
+    names = ", ".join(str(display_path(path)) for path in candidates)
+    raise BuildCliError(f"Multiple launcher packages match {version}. Pass --asset or --platform. Candidates: {names}")
+
+
+def platform_id_from_asset(asset: Path, version: str) -> str:
+    """Infer a platform id from a launcher package filename."""
+    marker = f"-launcher-{version}-"
+    if marker not in asset.name or not asset.name.endswith(".zip"):
+        raise BuildCliError("Cannot infer platform from launcher package name. Pass --platform.")
+    return asset.name.split(marker, 1)[1].removesuffix(".zip")
+
+
+def launcher_asset_url(repository: str, version: str, asset_name: str) -> str:
+    """Infer the public release download URL for one launcher package."""
+    provider = detect_repository_provider(repository)
+    cleaned = repository.rstrip("/").removesuffix(".git")
+    encoded_asset_name = quote(asset_name, safe="")
+    if provider == "gitlab":
+        return f"{cleaned}/-/releases/{version}/downloads/{encoded_asset_name}"
+    if provider == "github":
+        return f"{cleaned}/releases/download/{version}/{encoded_asset_name}"
+    raise BuildCliError("Cannot infer launcher asset URL without a GitHub or GitLab repository.")
+
+
+def current_platform_id() -> str:
+    """Return the normalized launcher package platform id for this machine."""
+    system = platform.system()
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        arch = "x64"
+    elif machine in {"arm64", "aarch64"}:
+        arch = "arm64"
+    else:
+        arch = machine.replace(" ", "-") or "unknown"
+
+    if system == "Darwin":
+        os_id = "macos"
+    elif system == "Windows":
+        os_id = "windows"
+    elif system == "Linux":
+        os_id = "linux"
+    else:
+        os_id = system.lower() or "unknown"
+    return f"{os_id}-{arch}"
+
+
+def require_executable(name: str, message: str) -> str:
+    """Return executable path or raise a build-specific error."""
+    executable = shutil.which(name)
+    if executable:
+        return executable
+    raise BuildCliError(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the parser for `launcher build`."""
     parser = argparse.ArgumentParser(
@@ -206,11 +490,90 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def package_parser() -> argparse.ArgumentParser:
+    """Build the parser for `launcher build package`."""
+    parser = argparse.ArgumentParser(
+        prog="launcher build package",
+        description="Package an already-built launcher executable.",
+    )
+    parser.add_argument("--version", required=True, help="Release version, for example v1.2.3")
+    parser.add_argument("--config", type=Path, default=None, help="Launcher app config")
+    parser.add_argument("--build-out", type=Path, default=DEFAULT_OUTPUT_DIR, help="Launcher build output directory")
+    parser.add_argument("--out", type=Path, default=DEFAULT_PACKAGE_DIR, help="Package output directory")
+    parser.add_argument("--platform", dest="platform_id", help="Override the package platform id")
+    return parser
+
+
+def upload_parser() -> argparse.ArgumentParser:
+    """Build the parser for `launcher build upload`."""
+    parser = argparse.ArgumentParser(
+        prog="launcher build upload",
+        description="Upload a packaged launcher executable.",
+    )
+    parser.add_argument("--version", required=True, help="Release version, for example v1.2.3")
+    parser.add_argument("--config", type=Path, default=None, help="Launcher app config")
+    parser.add_argument("--repository", help="Repository URL used to detect GitHub or GitLab")
+    parser.add_argument("--asset", type=Path, help="Launcher package asset; inferred from dist/ by default")
+    parser.add_argument("--platform", dest="platform_id", help="Platform id for asset inference and metadata")
+    parser.add_argument("--dist", type=Path, default=DEFAULT_PACKAGE_DIR, help="Directory containing launcher packages")
+    parser.add_argument("--distribution", type=Path, default=DEFAULT_DISTRIBUTION_PATH, help="Distribution metadata path")
+    parser.add_argument("--dry-run", action="store_true", help="Print the upload command without running it")
+    return parser
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run `launcher build`."""
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args_list = list(argv or [])
     try:
+        if args_list[:1] == ["package"]:
+            parser = package_parser()
+            args = parser.parse_args(args_list[1:])
+            artifact = package_launcher(
+                version=args.version,
+                config_path=args.config,
+                build_output_dir=args.build_out,
+                out_dir=args.out,
+                platform_id=args.platform_id,
+            )
+            print(f"Launcher package written to: {artifact}")
+            print("Reminder: sign and notarize the launcher executable before packaging it.")
+            return 0
+
+        if args_list[:1] == ["upload"]:
+            parser = upload_parser()
+            args = parser.parse_args(args_list[1:])
+            plan = plan_upload_launcher_package(
+                version=args.version,
+                config_path=args.config,
+                repository=args.repository,
+                asset=args.asset,
+                platform_id=args.platform_id,
+                dist_dir=args.dist,
+                distribution_path=args.distribution,
+            )
+            provider_name = "GitHub" if plan.provider == "github" else "GitLab"
+            if args.dry_run:
+                print(f"Dry run: planned {provider_name} launcher upload for {plan.version}.")
+                print("No files were uploaded and distribution metadata was not changed.")
+                print("Command:")
+                print(f"  {format_shell_command(plan.command)}")
+                return 0
+
+            print(f"Uploading launcher package to {provider_name}: {plan.asset}")
+            provider_output = run_launcher_upload_command(
+                plan.command,
+                provider=plan.provider,
+                version=plan.version,
+                repository=plan.repository,
+            )
+            update_distribution_metadata(plan)
+            if provider_output:
+                print(provider_output)
+            print(f"Distribution metadata updated: {plan.distribution_path}")
+            return 0
+
+        parser = build_parser()
+        args = parser.parse_args(args_list)
         if args.icon and args.spec:
             raise BuildCliError("--icon cannot be used with --spec because icon paths are encoded in the spec")
         plan = create_build_plan(config_path=args.config, output_dir=args.out, spec_path=args.spec, icon_path=args.icon)
@@ -228,6 +591,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     return 1
+
+
+def display_path(path: Path) -> Path:
+    """Return a path relative to the current directory when possible."""
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve())
+    except ValueError:
+        return path
 
 
 def format_shell_command(command: Sequence[str]) -> str:

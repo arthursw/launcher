@@ -1,6 +1,12 @@
 """Tests for launcher build planning."""
 
 from pathlib import Path
+import subprocess
+import stat
+import zipfile
+
+import pytest
+import yaml
 
 from launcher import build_cli
 
@@ -267,3 +273,242 @@ def test_build_reports_pyinstaller_failure_with_command(tmp_path, monkeypatch, c
     assert "Command:" in output.err
     assert str(plan.spec_path) in output.err
     assert "Traceback" not in output.err
+
+
+def test_build_package_macos_app_uses_ditto(tmp_path, monkeypatch):
+    """macOS app bundles should be packaged with ditto after external signing/notarization."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(build_cli.platform, "machine", lambda: "arm64")
+    write_config(tmp_path)
+    app = tmp_path / "dist" / "launcher" / "MyApp.app"
+    app.mkdir(parents=True)
+    calls = []
+
+    def fake_run(command, check):
+        calls.append((command, check))
+        Path(command[-1]).write_bytes(b"zip")
+
+    monkeypatch.setattr(build_cli.subprocess, "run", fake_run)
+
+    artifact = build_cli.package_launcher(version="v1.2.3")
+
+    assert artifact == Path("dist/MyApp-launcher-v1.2.3-macos-arm64.zip")
+    assert calls == [
+        (
+            [
+                "ditto",
+                "-c",
+                "-k",
+                "--sequesterRsrc",
+                "--keepParent",
+                str(app),
+                str(tmp_path / artifact),
+            ],
+            True,
+        )
+    ]
+
+
+def test_build_package_directory_build_uses_python_zip(tmp_path, monkeypatch):
+    """Non-macOS directory-style builds should package with Python zip tooling."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_cli.platform, "machine", lambda: "x86_64")
+    write_config(tmp_path)
+    build_dir = tmp_path / "dist" / "launcher" / "myapp"
+    build_dir.mkdir(parents=True)
+    (build_dir / "myapp").write_text("exe")
+
+    artifact = build_cli.package_launcher(version="v1.2.3")
+
+    assert artifact == Path("dist/MyApp-launcher-v1.2.3-linux-x64.zip")
+    with zipfile.ZipFile(tmp_path / artifact) as zf:
+        assert zf.read("myapp/myapp") == b"exe"
+
+
+def test_build_package_directory_build_preserves_symlinks(tmp_path, monkeypatch):
+    """Directory-style build packaging should preserve POSIX symlink entries."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_cli.platform, "machine", lambda: "x86_64")
+    write_config(tmp_path)
+    build_dir = tmp_path / "dist" / "launcher" / "myapp"
+    build_dir.mkdir(parents=True)
+    (build_dir / "target.txt").write_text("target")
+    (build_dir / "lib").mkdir()
+    try:
+        (build_dir / "link.txt").symlink_to("target.txt")
+        (build_dir / "lib-link").symlink_to("lib", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are not available on this filesystem: {exc}")
+
+    artifact = build_cli.package_launcher(version="v1.2.3")
+
+    with zipfile.ZipFile(tmp_path / artifact) as zf:
+        file_link = zf.getinfo("myapp/link.txt")
+        dir_link = zf.getinfo("myapp/lib-link")
+        assert stat.S_ISLNK(file_link.external_attr >> 16)
+        assert stat.S_ISLNK(dir_link.external_attr >> 16)
+        assert zf.read("myapp/link.txt") == b"target.txt"
+        assert zf.read("myapp/lib-link") == b"lib"
+
+
+def test_build_package_reports_missing_build_output(tmp_path, monkeypatch):
+    """Packaging should fail clearly when PyInstaller output has not been produced."""
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path)
+
+    with pytest.raises(build_cli.BuildCliError) as exc_info:
+        build_cli.package_launcher(version="v1.2.3")
+
+    message = str(exc_info.value)
+    assert "No launcher build output found" in message
+    assert "launcher build" in message
+    assert "sign and notarize" in message
+
+
+def test_build_upload_github_dry_run_does_not_update_distribution(tmp_path, monkeypatch):
+    """Dry-run launcher uploads should print the provider command without touching metadata."""
+    monkeypatch.chdir(tmp_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    write_config(tmp_path)
+    asset = tmp_path / "dist" / "MyApp-launcher-v1.2.3-linux-x64.zip"
+    asset.parent.mkdir()
+    asset.write_bytes(b"zip")
+
+    commands = build_cli.upload_launcher_package(version="v1.2.3", dry_run=True)
+
+    assert commands == [
+        [
+            str(gh),
+            "release",
+            "upload",
+            "v1.2.3",
+            "dist/MyApp-launcher-v1.2.3-linux-x64.zip",
+            "--clobber",
+        ]
+    ]
+    assert not (tmp_path / "packaging" / "launcher" / "distribution.yml").exists()
+
+
+def test_build_upload_gitlab_success_updates_distribution(tmp_path, monkeypatch):
+    """Successful GitLab launcher uploads should persist latest download metadata."""
+    monkeypatch.chdir(tmp_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    glab = fake_bin / "glab"
+    glab.write_text("")
+    glab.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    write_config(tmp_path).write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://gitlab.com/my-org/myapp.git",
+                "entrypoint:",
+                "  mode: script",
+                "  script: main.py",
+                "auto_update: true",
+                "configuration: pyproject.toml",
+            ]
+        )
+    )
+    asset = tmp_path / "dist" / "MyApp-launcher-v1.2.3-linux-x64.zip"
+    asset.parent.mkdir()
+    asset.write_bytes(b"zip")
+    calls = []
+
+    def fake_run(command, check, text, stdout, stderr):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(build_cli.subprocess, "run", fake_run)
+
+    commands = build_cli.upload_launcher_package(version="v1.2.3")
+
+    assert commands[0][:4] == [str(glab), "release", "upload", "v1.2.3"]
+    assert "--use-package-registry" in commands[0]
+    assert calls == [commands[0]]
+    distribution = yaml.safe_load((tmp_path / "packaging" / "launcher" / "distribution.yml").read_text())
+    assert distribution == {
+        "schema_version": 1,
+        "launcher_downloads": {
+            "linux-x64": {
+                "version": "v1.2.3",
+                "asset": "MyApp-launcher-v1.2.3-linux-x64.zip",
+                "url": "https://gitlab.com/my-org/myapp/-/releases/v1.2.3/downloads/MyApp-launcher-v1.2.3-linux-x64.zip",
+            }
+        },
+    }
+
+
+def test_build_upload_escapes_asset_names_in_distribution_urls(tmp_path, monkeypatch):
+    """Distribution URLs should percent-encode asset names while preserving filenames."""
+    monkeypatch.chdir(tmp_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    write_config(tmp_path).write_text(
+        "\n".join(
+            [
+                "name: My App",
+                "repository: https://github.com/my-org/myapp.git",
+                "entrypoint:",
+                "  mode: script",
+                "  script: main.py",
+                "auto_update: true",
+                "configuration: pyproject.toml",
+            ]
+        )
+    )
+    asset = tmp_path / "dist" / "My App-launcher-v1.2.3-linux-x64.zip"
+    asset.parent.mkdir()
+    asset.write_bytes(b"zip")
+    monkeypatch.setattr(
+        build_cli.subprocess,
+        "run",
+        lambda command, check, text, stdout, stderr: subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+
+    build_cli.upload_launcher_package(version="v1.2.3")
+
+    distribution = yaml.safe_load((tmp_path / "packaging" / "launcher" / "distribution.yml").read_text())
+    download = distribution["launcher_downloads"]["linux-x64"]
+    assert download["asset"] == "My App-launcher-v1.2.3-linux-x64.zip"
+    assert download["url"].endswith("/My%20App-launcher-v1.2.3-linux-x64.zip")
+
+
+def test_build_upload_failure_leaves_distribution_unchanged(tmp_path, monkeypatch):
+    """Failed launcher uploads should not publish stale metadata."""
+    monkeypatch.chdir(tmp_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    write_config(tmp_path)
+    distribution = tmp_path / "packaging" / "launcher" / "distribution.yml"
+    distribution.write_text("schema_version: 1\nlauncher_downloads: {}\n")
+    asset = tmp_path / "dist" / "MyApp-launcher-v1.2.3-linux-x64.zip"
+    asset.parent.mkdir()
+    asset.write_bytes(b"zip")
+
+    def fail(command, check, text, stdout, stderr):
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(build_cli.subprocess, "run", fail)
+
+    with pytest.raises(build_cli.BuildCliError):
+        build_cli.upload_launcher_package(version="v1.2.3")
+
+    assert yaml.safe_load(distribution.read_text()) == {"schema_version": 1, "launcher_downloads": {}}
