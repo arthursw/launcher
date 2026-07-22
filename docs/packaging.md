@@ -70,6 +70,9 @@ Copy the printed public key into `trust.public_key`.
 Keep the private key secret.
 `launcher release sign` uses it to sign `launcher-manifest.yml`.
 The packaged launcher verifies that manifest before it downloads or runs app code.
+The private key is not needed to build, package, or upload launcher executables on another platform.
+Copy it to another machine only if that machine will run `launcher release sign`, and transfer it through secure secret storage rather than Git.
+Operating-system signing uses separate Apple or Microsoft signing credentials.
 
 ## Phase 3: Build, Sign, Package, And Upload The Launcher
 
@@ -123,12 +126,56 @@ uv run launcher build upload --version v1.2.3
 
 `launcher build upload` uploads the current platform package with the provider CLI and updates `packaging/launcher/distribution.yml` only after the upload succeeds.
 That file is the source of truth for launcher download URLs used in future release notes.
+Commit and push the updated file after each platform upload so the next build machine starts with all existing platform entries.
+
+After the final platform upload, regenerate the existing provider release notes:
+
+```bash
+uv run launcher release update-notes v1.2.3 --notes RELEASE_NOTES.md
+```
+
+The command preserves the user-authored notes from `RELEASE_NOTES.md`, regenerates the Launcher-managed download block, and updates the existing GitHub or GitLab release.
+It uses `gh release edit` for GitHub.
+GitLab's `glab release create` command updates the existing release when the tag already has one.
 
 Launcher artifacts are uploaded only when the launcher executable changes.
 That is the canonical workflow.
 
 If you prefer every release to be self-contained, you may build, package, and upload launcher artifacts for every release.
 That costs more CI time and signing work, but it makes each release page contain every installer artifact directly.
+
+### Building One Release On Multiple Machines
+
+Use one provider release and one tag for all platform-specific launcher packages.
+For example, a macOS and Windows build of `v1.2.3` are separate assets on the same `v1.2.3` release, not separate releases.
+
+On the first machine, create the release, upload that machine's package, then commit and push the distribution metadata:
+
+```bash
+uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher build upload --version v1.2.3
+git add packaging/launcher/distribution.yml
+git commit -m "Record macOS launcher download"
+git push
+```
+
+On each additional build machine, pull the metadata before building, upload its package to the existing release, and update the release notes after the upload:
+
+```bash
+git pull --ff-only
+uv run --with pyinstaller launcher build
+# Sign the executable with this operating system's signing tools here.
+uv run launcher build package --version v1.2.3
+uv run launcher build upload --version v1.2.3
+uv run launcher release update-notes v1.2.3 --notes RELEASE_NOTES.md
+git add packaging/launcher/distribution.yml
+git commit -m "Record Windows launcher download"
+git push
+```
+
+Run `release update-notes` again after any later platform upload.
+The managed block is replaced rather than appended, so the command is safe to repeat.
+Do not rerun `launcher release create` on GitHub for the same tag because the release already exists.
 
 ## Phase 4: Create App Releases
 
@@ -159,6 +206,7 @@ Launcher preflights the remote GitLab tag first so `glab` cannot silently create
 
 Generated release notes are your notes plus a Launcher-managed download block when launcher download URLs are known.
 Local launcher packages for the current version override older URLs from `packaging/launcher/distribution.yml`.
+After uploading another platform package, run `launcher release update-notes VERSION --notes RELEASE_NOTES.md` to apply the expanded download block to the existing release.
 
 ## Phase 5: Build The App Archive
 

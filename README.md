@@ -30,7 +30,13 @@ uv run launcher build
 uv run launcher build package --version v1.2.3
 uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
 uv run launcher build upload --version v1.2.3
+# After the final platform uploads its package:
+uv run launcher release update-notes v1.2.3 --notes RELEASE_NOTES.md
 ```
+
+Use one provider release per version and upload each macOS, Windows, or Linux launcher package as a separate platform-named asset.
+Each successful `launcher build upload` updates `packaging/launcher/distribution.yml`; commit and push that file before building on the next machine.
+The final platform runs `launcher release update-notes` to replace the managed download block with links for every recorded platform.
 
 Publish a normal app-only release:
 

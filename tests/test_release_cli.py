@@ -1357,6 +1357,54 @@ def test_compose_release_notes_appends_launcher_download_block(tmp_path, monkeyp
     assert "- macos-arm64: [MyApp-launcher-v1.2.2-macos-arm64.zip](https://example.com/old.zip)" in generated
 
 
+def test_compose_release_notes_replaces_managed_download_block(tmp_path, monkeypatch):
+    """Regenerating notes should replace the managed block instead of duplicating it."""
+    monkeypatch.chdir(tmp_path)
+    distribution = tmp_path / "packaging" / "launcher" / "distribution.yml"
+    distribution.parent.mkdir(parents=True)
+    distribution.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "launcher_downloads": {
+                    "macos-arm64": {
+                        "version": "v1.2.3",
+                        "asset": "MyApp-launcher-v1.2.3-macos-arm64.zip",
+                        "url": "https://example.com/macos.zip",
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    original = release_cli.compose_release_notes(version="v1.2.3", notes_text="User notes")
+    data = yaml.safe_load(distribution.read_text())
+    data["launcher_downloads"]["windows-x64"] = {
+        "version": "v1.2.3",
+        "asset": "MyApp-launcher-v1.2.3-windows-x64.zip",
+        "url": "https://example.com/windows.zip",
+    }
+    distribution.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    updated = release_cli.compose_release_notes(version="v1.2.3", notes_text=original)
+
+    assert updated.count(release_cli.LAUNCHER_DOWNLOADS_START) == 1
+    assert updated.count("## Launcher Downloads") == 1
+    assert "macos-arm64" in updated
+    assert "windows-x64" in updated
+
+
+def test_compose_release_notes_rejects_incomplete_managed_block(tmp_path, monkeypatch):
+    """Malformed managed markers should fail instead of discarding user-authored notes."""
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="incomplete Launcher downloads block"):
+        release_cli.compose_release_notes(
+            version="v1.2.3",
+            notes_text=f"User notes\n\n{release_cli.LAUNCHER_DOWNLOADS_START}\n",
+        )
+
+
 def test_compose_release_notes_prefers_local_current_version_packages(tmp_path, monkeypatch):
     """Local packages for the release version should override stored distribution URLs."""
     monkeypatch.chdir(tmp_path)
@@ -1440,6 +1488,71 @@ def test_release_create_github_uses_verify_tag_and_generated_notes(tmp_path, mon
         str(plan.notes_file),
     ]
     assert plan.notes_file.read_text() == "Release notes\n"
+
+
+@pytest.mark.parametrize(
+    ("repository", "executable_name", "expected_command"),
+    [
+        (
+            "https://github.com/my-org/myapp.git",
+            "gh",
+            ["release", "edit", "v1.2.3", "--notes-file"],
+        ),
+        (
+            "https://gitlab.com/my-org/myapp.git",
+            "glab",
+            ["release", "create", "v1.2.3", "--notes-file"],
+        ),
+    ],
+)
+def test_plan_update_release_notes_uses_provider_edit_command(
+    tmp_path,
+    monkeypatch,
+    repository,
+    executable_name,
+    expected_command,
+):
+    """Release note updates should use each provider's existing-release command."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text(f"name: MyApp\nrepository: {repository}\n")
+    (app_dir / "distribution.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "launcher_downloads": {
+                    "macos-arm64": {
+                        "version": "v1.2.3",
+                        "asset": "MyApp-launcher-v1.2.3-macos-arm64.zip",
+                        "url": "https://example.com/macos.zip",
+                    },
+                    "windows-x64": {
+                        "version": "v1.2.3",
+                        "asset": "MyApp-launcher-v1.2.3-windows-x64.zip",
+                        "url": "https://example.com/windows.zip",
+                    },
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    executable = fake_bin / executable_name
+    executable.write_text("")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+
+    plan = release_cli.plan_update_release_notes(version="v1.2.3", notes_path=notes)
+
+    assert plan.command[:-1] == [str(executable), *expected_command]
+    assert plan.command[-1] == str(plan.notes_file)
+    generated = plan.notes_file.read_text()
+    assert "macos-arm64" in generated
+    assert "windows-x64" in generated
 
 
 def test_release_create_accepts_inline_notes_text(tmp_path, monkeypatch):
@@ -1633,3 +1746,26 @@ def test_release_create_cli_accepts_notes_text(tmp_path, monkeypatch, capsys):
     assert result == 0
     assert "Dry run: planned GitHub release creation for v1.2.3." in output
     assert "gh release create v1.2.3 --verify-tag --notes-file" in output
+
+
+def test_release_update_notes_cli_dry_run_prints_provider_command(tmp_path, monkeypatch, capsys):
+    """The update-notes CLI should expose the generated provider edit command."""
+    monkeypatch.chdir(tmp_path)
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("Release notes\n")
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+
+    result = release_cli.main(["update-notes", "v1.2.3", "--notes", str(notes), "--dry-run"])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Dry run: planned GitHub release notes update for v1.2.3." in output
+    assert "gh release edit v1.2.3 --notes-file" in output

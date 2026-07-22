@@ -36,6 +36,8 @@ DEFAULT_PRIVATE_KEY = Path("launcher-signing-key.pem")
 DEFAULT_MANIFEST_NAME = "launcher-manifest.yml"
 DEFAULT_SIGNATURE_NAME = "launcher-manifest.yml.sig"
 DEFAULT_DISTRIBUTION_PATH = Path("packaging/launcher/distribution.yml")
+LAUNCHER_DOWNLOADS_START = "<!-- launcher-downloads:start -->"
+LAUNCHER_DOWNLOADS_END = "<!-- launcher-downloads:end -->"
 ARCHIVE_SUFFIXES = (".zip",)
 
 
@@ -96,6 +98,17 @@ class ReleaseUploadPlan:
 @dataclass(frozen=True)
 class ReleaseCreatePlan:
     """Verified release creation command and generated notes path."""
+
+    version: str
+    provider: str
+    repository: str | None
+    command: list[str]
+    notes_file: Path
+
+
+@dataclass(frozen=True)
+class ReleaseNotesUpdatePlan:
+    """Resolved command for updating an existing provider release's notes."""
 
     version: str
     provider: str
@@ -556,6 +569,91 @@ def plan_create_release(
     return ReleaseCreatePlan(version=version, provider=provider, repository=repository, command=command, notes_file=notes_file)
 
 
+def update_release_notes(
+    *,
+    version: str,
+    notes_path: Path | None = None,
+    notes_text: str | None = None,
+    config_path: Path | None = None,
+    repository: str | None = None,
+    dry_run: bool = False,
+) -> list[list[str]]:
+    """Update an existing provider release with regenerated release notes."""
+    plan = plan_update_release_notes(
+        version=version,
+        notes_path=notes_path,
+        notes_text=notes_text,
+        config_path=config_path,
+        repository=repository,
+    )
+    if dry_run:
+        return [plan.command]
+
+    run_release_notes_update_command(
+        plan.command,
+        provider=plan.provider,
+        version=plan.version,
+        repository=plan.repository,
+    )
+    return [plan.command]
+
+
+def plan_update_release_notes(
+    *,
+    version: str,
+    notes_path: Path | None = None,
+    notes_text: str | None = None,
+    config_path: Path | None = None,
+    repository: str | None = None,
+) -> ReleaseNotesUpdatePlan:
+    """Build the provider command for updating an existing release's notes."""
+    release_config = load_release_config(config_path)
+    repository = repository or release_config.repository
+    provider = detect_repository_provider(repository)
+    if not provider:
+        raise ReleaseCliError("Cannot detect GitHub or GitLab repository. Pass --repository or configure repository.")
+
+    generated_notes = compose_release_notes(
+        version=version,
+        notes_path=notes_path,
+        notes_text=notes_text,
+        config_path=config_path,
+        repository=repository,
+    )
+    notes_file = write_generated_notes(version, generated_notes)
+    if provider == "github":
+        command = [
+            require_executable(
+                "gh",
+                "GitHub release note updates require the GitHub CLI (`gh`). Install it from https://github.com/cli/cli#installation.",
+            ),
+            "release",
+            "edit",
+            version,
+            "--notes-file",
+            str(notes_file),
+        ]
+    else:
+        command = [
+            require_executable(
+                "glab",
+                "GitLab release note updates require the GitLab CLI (`glab`). Install it from https://gitlab.com/gitlab-org/cli/#installation.",
+            ),
+            "release",
+            "create",
+            version,
+            "--notes-file",
+            str(notes_file),
+        ]
+    return ReleaseNotesUpdatePlan(
+        version=version,
+        provider=provider,
+        repository=repository,
+        command=command,
+        notes_file=notes_file,
+    )
+
+
 def compose_release_notes(
     *,
     version: str,
@@ -582,6 +680,7 @@ def compose_release_notes(
             ) from e
     else:
         raise ReleaseCliError("Release notes are required. Pass --notes or --notes-text.")
+    notes = remove_launcher_downloads_block(notes)
     downloads = launcher_downloads_for_notes(
         version=version,
         config_path=config_path,
@@ -592,11 +691,30 @@ def compose_release_notes(
     if not downloads:
         return notes
 
-    block = ["", "## Launcher Downloads", ""]
+    block = [LAUNCHER_DOWNLOADS_START, "", "## Launcher Downloads", ""]
     for platform_id in sorted(downloads):
         item = downloads[platform_id]
         block.append(f"- {platform_id}: [{item['asset']}]({item['url']})")
-    return notes.rstrip() + "\n" + "\n".join(block) + "\n"
+    block.extend(["", LAUNCHER_DOWNLOADS_END])
+    return notes.rstrip() + "\n\n" + "\n".join(block) + "\n"
+
+
+def remove_launcher_downloads_block(notes: str) -> str:
+    """Remove a previously generated Launcher download block from release notes."""
+    start = notes.find(LAUNCHER_DOWNLOADS_START)
+    end = notes.find(LAUNCHER_DOWNLOADS_END)
+    if start == -1 and end == -1:
+        return notes
+    if start == -1 or end == -1 or end < start:
+        raise ReleaseCliError("Release notes contain an incomplete Launcher downloads block.")
+
+    before = notes[:start].rstrip()
+    after = notes[end + len(LAUNCHER_DOWNLOADS_END) :].lstrip("\n")
+    if before and after:
+        return f"{before}\n\n{after}"
+    if before:
+        return f"{before}\n"
+    return after
 
 
 def launcher_downloads_for_notes(
@@ -717,6 +835,24 @@ def run_release_create_command(command: list[str], *, provider: str, version: st
         repository_hint = f"\nRepository: {repository}" if repository else ""
         raise ReleaseCliError(
             f"{provider_name} release creation failed with exit code {e.returncode}.\n\n"
+            f"Command:\n  {format_shell_command(command)}"
+            f"{repository_hint}"
+            f"{output_section}"
+        ) from e
+    return combine_process_output(result.stdout, result.stderr)
+
+
+def run_release_notes_update_command(command: list[str], *, provider: str, version: str, repository: str | None) -> str:
+    """Run a provider release-notes update command."""
+    try:
+        result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        provider_name = release_provider_name(provider)
+        output = combine_process_output(e.stdout, e.stderr)
+        output_section = f"\n\nProvider output:\n{output}" if output else ""
+        repository_hint = f"\nRepository: {repository}" if repository else ""
+        raise ReleaseCliError(
+            f"{provider_name} release notes update failed with exit code {e.returncode}.\n\n"
             f"Command:\n  {format_shell_command(command)}"
             f"{repository_hint}"
             f"{output_section}"
@@ -1386,6 +1522,22 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     create_parser.add_argument("--remote", default="origin", help="Git remote used for tag preflight and push")
     create_parser.add_argument("--dry-run", action="store_true", help="Print planned commands without creating the release")
 
+    update_notes_parser = subparsers.add_parser(
+        "update-notes",
+        help="Update an existing provider release with regenerated launcher download links",
+    )
+    update_notes_parser.add_argument("version", help="Release version or tag, for example v1.2.3")
+    update_notes_group = update_notes_parser.add_mutually_exclusive_group(required=True)
+    update_notes_group.add_argument("--notes", type=Path, help="User-authored release notes Markdown file")
+    update_notes_group.add_argument("--notes-text", help="Inline release notes text")
+    update_notes_parser.add_argument("--config", type=Path, help=f"Launcher app config (default: {DEFAULT_CONFIG_PATH})")
+    update_notes_parser.add_argument("--repository", help="Repository URL used to detect GitHub or GitLab")
+    update_notes_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the update command without changing the release",
+    )
+
     archive_parser = subparsers.add_parser("archive", help="Build the app archive for release signing")
     archive_parser.add_argument("version", help="Release version or git ref, for example v1.2.3")
     archive_parser.add_argument("--config", type=Path, help=f"Launcher app config (default: {DEFAULT_CONFIG_PATH})")
@@ -1481,6 +1633,26 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
             print("Commands:")
             for command in commands:
                 print(f"  {format_shell_command(command)}")
+            return 0
+
+        if args.command == "update-notes":
+            commands = update_release_notes(
+                version=args.version,
+                notes_path=args.notes,
+                notes_text=args.notes_text,
+                config_path=args.config,
+                repository=args.repository,
+                dry_run=args.dry_run,
+            )
+            provider = detect_repository_provider(args.repository or load_release_config(args.config).repository)
+            provider_name = release_provider_name(provider or "github")
+            if args.dry_run:
+                print(f"Dry run: planned {provider_name} release notes update for {args.version}.")
+                print("The release was not changed.")
+            else:
+                print(f"Release notes updated: {args.version}")
+            print("Command:")
+            print(f"  {format_shell_command(commands[0])}")
             return 0
 
         if args.command == "sign":
