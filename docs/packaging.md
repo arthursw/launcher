@@ -120,23 +120,17 @@ Otherwise it packages the PyInstaller directory-style build with Python zip tool
 Create the release and upload the launcher package:
 
 ```bash
-uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
 uv run launcher build upload --version v1.2.3
 ```
+
+The examples use `--notes-text` for short inline release notes.
+For longer notes, create a Markdown file such as `RELEASE_NOTES.md` and use `--notes RELEASE_NOTES.md` instead.
+Both `release create` and `release update-notes` require exactly one of `--notes-text` or `--notes`.
 
 `launcher build upload` uploads the current platform package with the provider CLI and updates `packaging/launcher/distribution.yml` only after the upload succeeds.
 That file is the source of truth for launcher download URLs used in future release notes.
 Commit and push the updated file after each platform upload so the next build machine starts with all existing platform entries.
-
-After the final platform upload, regenerate the existing provider release notes:
-
-```bash
-uv run launcher release update-notes v1.2.3 --notes RELEASE_NOTES.md
-```
-
-The command preserves the user-authored notes from `RELEASE_NOTES.md`, regenerates the Launcher-managed download block, and updates the existing GitHub or GitLab release.
-It uses `gh release edit` for GitHub.
-GitLab's `glab release create` command updates the existing release when the tag already has one.
 
 Launcher artifacts are uploaded only when the launcher executable changes.
 That is the canonical workflow.
@@ -146,20 +140,18 @@ That costs more CI time and signing work, but it makes each release page contain
 
 ### Building One Release On Multiple Machines
 
-Use one provider release and one tag for all platform-specific launcher packages.
-For example, a macOS and Windows build of `v1.2.3` are separate assets on the same `v1.2.3` release, not separate releases.
+Use one release and one tag for all platforms.
+For example, the macOS and Windows packages for `v1.2.3` are separate assets on the same `v1.2.3` release.
 
-On the first machine, create the release, upload that machine's package, then commit and push the distribution metadata:
+On the first machine, create the release and upload its package as described above, then push the updated download metadata:
 
 ```bash
-uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
-uv run launcher build upload --version v1.2.3
 git add packaging/launcher/distribution.yml
 git commit -m "Record macOS launcher download"
 git push
 ```
 
-On each additional build machine, pull the metadata before building, upload its package to the existing release, and update the release notes after the upload:
+On each additional machine, pull that metadata, build and upload its package, then update the existing release notes:
 
 ```bash
 git pull --ff-only
@@ -167,23 +159,26 @@ uv run --with pyinstaller launcher build
 # Sign the executable with this operating system's signing tools here.
 uv run launcher build package --version v1.2.3
 uv run launcher build upload --version v1.2.3
-uv run launcher release update-notes v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher release update-notes v1.2.3 --notes-text "Release v1.2.3"
 git add packaging/launcher/distribution.yml
 git commit -m "Record Windows launcher download"
 git push
 ```
 
-Run `release update-notes` again after any later platform upload.
-The managed block is replaced rather than appended, so the command is safe to repeat.
-Do not rerun `launcher release create` on GitHub for the same tag because the release already exists.
+`build upload` adds the current platform to `distribution.yml` without removing earlier platforms.
+`release update-notes` regenerates the download block from that file and updates the existing GitHub or GitLab release.
+It replaces the managed block and is safe to rerun.
 
 ## Phase 4: Create App Releases
 
-Write user-facing release notes in Markdown, then create the provider release:
+Create the provider release with user-facing notes if it does not already exist:
 
 ```bash
-uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
 ```
+
+Create each version only once.
+If Phase 3 already created the release before uploading a launcher package, skip this command and continue with the app archive.
 
 By default, the tag must already exist locally and on the configured remote.
 To create a local lightweight tag at `HEAD`, pass `--tag`.
@@ -206,7 +201,6 @@ Launcher preflights the remote GitLab tag first so `glab` cannot silently create
 
 Generated release notes are your notes plus a Launcher-managed download block when launcher download URLs are known.
 Local launcher packages for the current version override older URLs from `packaging/launcher/distribution.yml`.
-After uploading another platform package, run `launcher release update-notes VERSION --notes RELEASE_NOTES.md` to apply the expanded download block to the existing release.
 
 ## Phase 5: Build The App Archive
 

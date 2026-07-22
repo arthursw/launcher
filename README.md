@@ -28,20 +28,22 @@ Build the launcher executable when it changes:
 uv run launcher build
 # sign/notarize the built launcher here
 uv run launcher build package --version v1.2.3
-uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
 uv run launcher build upload --version v1.2.3
-# After the final platform uploads its package:
-uv run launcher release update-notes v1.2.3 --notes RELEASE_NOTES.md
 ```
 
 Use one provider release per version and upload each macOS, Windows, or Linux launcher package as a separate platform-named asset.
 Each successful `launcher build upload` updates `packaging/launcher/distribution.yml`; commit and push that file before building on the next machine.
-The final platform runs `launcher release update-notes` to replace the managed download block with links for every recorded platform.
+After the final platform upload, update the existing release with links for every recorded platform:
+
+```bash
+uv run launcher release update-notes v1.2.3 --notes-text "Release v1.2.3"
+```
 
 Publish a normal app-only release:
 
 ```bash
-uv run launcher release create v1.2.3 --notes RELEASE_NOTES.md
+uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
 uv run launcher release archive v1.2.3
 uv run launcher release sign
 uv run launcher release verify
