@@ -1,5 +1,5 @@
 [project]
-name = "launcher"
+name = "wetlands-launcher"
 version = "0.2.0"
 description = "Auto-updating application launcher with Python environment management"
 requires-python = ">=3.10"

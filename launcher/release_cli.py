@@ -448,7 +448,8 @@ def upload_release(
 def create_release(
     *,
     version: str,
-    notes_path: Path,
+    notes_path: Path | None = None,
+    notes_text: str | None = None,
     config_path: Path | None = None,
     repository: str | None = None,
     title: str | None = None,
@@ -474,6 +475,7 @@ def create_release(
     plan = plan_create_release(
         version=version,
         notes_path=notes_path,
+        notes_text=notes_text,
         config_path=config_path,
         repository=repository,
         title=title,
@@ -491,7 +493,8 @@ def create_release(
 def plan_create_release(
     *,
     version: str,
-    notes_path: Path,
+    notes_path: Path | None = None,
+    notes_text: str | None = None,
     config_path: Path | None = None,
     repository: str | None = None,
     title: str | None = None,
@@ -515,6 +518,7 @@ def plan_create_release(
     generated_notes = compose_release_notes(
         version=version,
         notes_path=notes_path,
+        notes_text=notes_text,
         config_path=config_path,
         repository=repository,
     )
@@ -555,14 +559,29 @@ def plan_create_release(
 def compose_release_notes(
     *,
     version: str,
-    notes_path: Path,
+    notes_path: Path | None = None,
+    notes_text: str | None = None,
     config_path: Path | None = None,
     repository: str | None = None,
     distribution_path: Path = DEFAULT_DISTRIBUTION_PATH,
     dist_dir: Path = DEFAULT_DIST_DIR,
 ) -> str:
     """Return user notes with a Launcher-managed download block when URLs exist."""
-    notes = notes_path.expanduser().read_text()
+    if notes_path and notes_text is not None:
+        raise ReleaseCliError("Pass either --notes or --notes-text, not both.")
+    if notes_text is not None:
+        notes = notes_text
+    elif notes_path:
+        try:
+            notes = notes_path.expanduser().read_text()
+        except FileNotFoundError as e:
+            raise ReleaseCliError(
+                f"Release notes file not found: {notes_path}. "
+                "--notes expects a Markdown file path. "
+                f"Use `launcher release create {version} --notes-text \"Release {version}\"` for inline text."
+            ) from e
+    else:
+        raise ReleaseCliError("Release notes are required. Pass --notes or --notes-text.")
     downloads = launcher_downloads_for_notes(
         version=version,
         config_path=config_path,
@@ -680,7 +699,10 @@ def require_remote_tag_exists(version: str, remote: str, repo_root: Path) -> Non
         git_stdout(["ls-remote", "--exit-code", "--tags", remote, f"refs/tags/{version}"], cwd=repo_root)
     except ReleaseCliError as e:
         raise ReleaseCliError(
-            f"Remote tag {version} was not found on {remote}. Pass --push to push it, or push it manually first."
+            f"Remote tag {version} was not found on {remote}. "
+            f"Pass --push to run `git push {remote} {version}`, "
+            f"or run `git push {remote} {version}` manually before retrying. "
+            "Plain `git push` does not usually push tags."
         ) from e
 
 
@@ -826,6 +848,7 @@ def format_upload_command_error(
             f"  - Push the release tag if it is not on GitLab yet: git push origin {version}\n"
             "  - Create the GitLab release before uploading assets: "
             f"glab release create {version} --notes \"Release {version}\"\n"
+            "  - If you just pushed the tag after a failed release create, rerun `launcher release create` before upload.\n"
             "  - Check GitLab CLI authentication, hostname, and repository access: glab auth status\n"
             "  - If the release already exists, verify that the configured repository points to the expected GitLab project."
         )
@@ -1348,7 +1371,9 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
 
     create_parser = subparsers.add_parser("create", help="Create the provider release")
     create_parser.add_argument("version", help="Release version or tag, for example v1.2.3")
-    create_parser.add_argument("--notes", type=Path, required=True, help="User-authored release notes Markdown file")
+    notes_group = create_parser.add_mutually_exclusive_group(required=True)
+    notes_group.add_argument("--notes", type=Path, help="User-authored release notes Markdown file")
+    notes_group.add_argument("--notes-text", help="Inline release notes text")
     create_parser.add_argument("--config", type=Path, help=f"Launcher app config (default: {DEFAULT_CONFIG_PATH})")
     create_parser.add_argument("--repository", help="Repository URL used to detect GitHub or GitLab")
     create_parser.add_argument("--title", help="Provider release title")
@@ -1433,6 +1458,7 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
             commands = create_release(
                 version=args.version,
                 notes_path=args.notes,
+                notes_text=args.notes_text,
                 config_path=args.config,
                 repository=args.repository,
                 title=args.title,

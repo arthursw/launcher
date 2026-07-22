@@ -479,48 +479,6 @@ wheels = [
 ]
 
 [[package]]
-name = "launcher"
-version = "0.2.0"
-source = { editable = "." }
-dependencies = [
-    { name = "cryptography" },
-    { name = "keyring" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "toml" },
-    { name = "wetlands" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-]
-qt = [
-    { name = "pyside6" },
-]
-textual = [
-    { name = "textual" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cryptography", specifier = ">=42.0" },
-    { name = "keyring", specifier = ">=24.0" },
-    { name = "pyside6", marker = "extra == 'qt'", specifier = ">=6.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests", specifier = ">=2.31" },
-    { name = "textual", marker = "extra == 'textual'", specifier = ">=0.40" },
-    { name = "toml", specifier = ">=0.10" },
-    { name = "wetlands", specifier = ">=1.0.5" },
-]
-provides-extras = ["dev", "qt", "textual"]
-
-[[package]]
 name = "linkify-it-py"
 version = "2.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -996,6 +954,48 @@ sdist = { url = "https://files.pythonhosted.org/packages/ce/ca/134e3d476c87fac6a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/a1/0de3d7a28d45c1de4e6bfdf246fa7cd1e19cce13629d54cea7c6dde7623d/wetlands-1.0.5-py3-none-any.whl", hash = "sha256:2c2b04610861958891f01f5c69dc39ceb1b035568eb642505471dec304d49a2b", size = 69621, upload-time = "2026-06-10T09:16:52.171Z" },
 ]
+
+[[package]]
+name = "wetlands-launcher"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "cryptography" },
+    { name = "keyring" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "toml" },
+    { name = "wetlands" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+]
+qt = [
+    { name = "pyside6" },
+]
+textual = [
+    { name = "textual" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=42.0" },
+    { name = "keyring", specifier = ">=24.0" },
+    { name = "pyside6", marker = "extra == 'qt'", specifier = ">=6.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.31" },
+    { name = "textual", marker = "extra == 'textual'", specifier = ">=0.40" },
+    { name = "toml", specifier = ">=0.10" },
+    { name = "wetlands", specifier = ">=1.0.5" },
+]
+provides-extras = ["dev", "qt", "textual"]
 
 [[package]]
 name = "zipp"

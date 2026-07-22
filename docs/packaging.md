@@ -10,7 +10,7 @@ Your app is the versioned archive Launcher downloads from GitHub or GitLab relea
 Add Launcher as a development dependency:
 
 ```bash
-uv add --dev launcher
+uv add --dev wetlands-launcher
 ```
 
 Create the app-owned packaging files:

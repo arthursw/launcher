@@ -1219,6 +1219,7 @@ def test_upload_gitlab_cli_failure_explains_release_prerequisites(tmp_path, monk
     assert "GitLab release upload failed" in message
     assert "404 Not Found" in message
     assert "glab release create v1.2.3" in message
+    assert "rerun `launcher release create` before upload" in message
     assert "git push origin v1.2.3" in message
     assert "glab auth status" in message
     assert "Traceback" not in message
@@ -1296,6 +1297,28 @@ def test_compose_release_notes_passes_user_notes_through_when_no_downloads(tmp_p
     generated = release_cli.compose_release_notes(version="v1.2.3", notes_path=notes)
 
     assert generated == "## Changes\n\n- Fixed startup\n"
+
+
+def test_compose_release_notes_missing_file_explains_notes_path(tmp_path, monkeypatch):
+    """Missing release notes files should fail without a Python traceback."""
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(release_cli.ReleaseCliError) as exc_info:
+        release_cli.compose_release_notes(version="v1.2.3", notes_path=Path("Release v1.2.3"))
+
+    message = str(exc_info.value)
+    assert "Release notes file not found: Release v1.2.3" in message
+    assert "--notes expects a Markdown file path" in message
+    assert 'launcher release create v1.2.3 --notes-text "Release v1.2.3"' in message
+
+
+def test_compose_release_notes_accepts_inline_text(tmp_path, monkeypatch):
+    """Inline release notes should use the same generated-notes flow as notes files."""
+    monkeypatch.chdir(tmp_path)
+
+    generated = release_cli.compose_release_notes(version="v1.2.3", notes_text="Release v1.2.3")
+
+    assert generated == "Release v1.2.3"
 
 
 def test_compose_release_notes_appends_launcher_download_block(tmp_path, monkeypatch):
@@ -1419,6 +1442,35 @@ def test_release_create_github_uses_verify_tag_and_generated_notes(tmp_path, mon
     assert plan.notes_file.read_text() == "Release notes\n"
 
 
+def test_release_create_accepts_inline_notes_text(tmp_path, monkeypatch):
+    """Release creation should accept inline notes and still pass a notes file to the provider CLI."""
+    monkeypatch.chdir(tmp_path)
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+
+    plan = release_cli.plan_create_release(version="v1.2.3", notes_text="Release v1.2.3")
+
+    assert plan.command == [
+        str(gh),
+        "release",
+        "create",
+        "v1.2.3",
+        "--verify-tag",
+        "--notes-file",
+        str(plan.notes_file),
+    ]
+    assert plan.notes_file.read_text() == "Release v1.2.3"
+
+
 def test_release_create_gitlab_refuses_when_remote_tag_missing(tmp_path, monkeypatch):
     """GitLab release creation must preflight the remote tag instead of letting glab create it."""
     monkeypatch.chdir(tmp_path)
@@ -1442,8 +1494,13 @@ def test_release_create_gitlab_refuses_when_remote_tag_missing(tmp_path, monkeyp
 
     monkeypatch.setattr(release_cli, "git_stdout", fake_git_stdout)
 
-    with pytest.raises(release_cli.ReleaseCliError, match="Remote tag v1.2.3 was not found"):
+    with pytest.raises(release_cli.ReleaseCliError) as exc_info:
         release_cli.plan_create_release(version="v1.2.3", notes_path=notes)
+
+    message = str(exc_info.value)
+    assert "Remote tag v1.2.3 was not found" in message
+    assert "git push origin v1.2.3" in message
+    assert "Plain `git push` does not usually push tags" in message
 
 
 def test_release_create_gitlab_title_uses_name_flag(tmp_path, monkeypatch):
@@ -1548,6 +1605,29 @@ def test_release_create_dry_run_prints_planned_command_without_provider_call(tmp
     monkeypatch.setattr(release_cli, "run_release_create_command", fail)
 
     result = release_cli.main(["create", "v1.2.3", "--notes", str(notes), "--dry-run"])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Dry run: planned GitHub release creation for v1.2.3." in output
+    assert "gh release create v1.2.3 --verify-tag --notes-file" in output
+
+
+def test_release_create_cli_accepts_notes_text(tmp_path, monkeypatch, capsys):
+    """The create CLI should accept inline release notes."""
+    monkeypatch.chdir(tmp_path)
+    app_dir = tmp_path / "packaging" / "launcher"
+    app_dir.mkdir(parents=True)
+    (app_dir / "application.yml").write_text("name: MyApp\nrepository: https://github.com/my-org/myapp.git\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    gh = fake_bin / "gh"
+    gh.write_text("")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+
+    result = release_cli.main(["create", "v1.2.3", "--notes-text", "Release v1.2.3", "--dry-run"])
 
     output = capsys.readouterr().out
     assert result == 0

@@ -16,7 +16,7 @@ That split keeps normal app releases small:
 Initialize an app repository:
 
 ```bash
-uv add --dev launcher
+uv add --dev wetlands-launcher
 uv run launcher init --name MyApp --repository https://github.com/my-org/myapp.git
 uv run launcher config check
 uv run launcher release keygen
