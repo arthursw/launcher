@@ -138,11 +138,8 @@ def test_build_spec_only_writes_generated_spec(tmp_path, monkeypatch, capsys):
     assert str(icon.resolve()) in text
     assert f"icon={str(icon.resolve())!r}" in text
     assert "dist/launcher" in text
-    assert "from PyInstaller.utils.hooks import collect_data_files" in text
-    assert "wetlands_datas = collect_data_files(" in text
-    assert "includes=['_internal/checksums/*.sha256']" in text
-    assert "datas=[" in text
-    assert "] + wetlands_datas" in text
+    assert "collect_data_files" not in text
+    assert "wetlands_datas" not in text
     output = capsys.readouterr()
     assert "Spec-only mode: generated build files without running PyInstaller." in output.out
     assert "Launcher build spec:" in output.out
