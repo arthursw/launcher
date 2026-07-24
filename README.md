@@ -25,12 +25,15 @@ uv run launcher release keygen
 Build the launcher executable when it changes:
 
 ```bash
-uv run launcher build
+uv run --with pyinstaller launcher build
 # sign/notarize the built launcher here
 uv run launcher build package --version v1.2.3
 uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
 uv run launcher build upload --version v1.2.3
 ```
+
+Supply PyInstaller through the same `uv run` invocation so it can import the installed `launcher` package.
+The build command rejects a `pyinstaller` executable that is present only on `PATH` because it may belong to another Python environment and produce an incomplete launcher.
 
 Use one provider release per version and upload each macOS, Windows, or Linux launcher package as a separate platform-named asset.
 Each successful `launcher build upload` updates `packaging/launcher/distribution.yml`; commit and push that file before building on the next machine.

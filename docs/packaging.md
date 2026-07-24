@@ -79,8 +79,11 @@ Operating-system signing uses separate Apple or Microsoft signing credentials.
 Build the launcher executable:
 
 ```bash
-uv run launcher build
+uv run --with pyinstaller launcher build
 ```
+
+Supply PyInstaller through the same `uv run` invocation so it can import the installed `launcher` package.
+The build command deliberately ignores a `pyinstaller` executable that is present only on `PATH`, because it may belong to another Python environment and produce an incomplete launcher.
 
 The build output is written under `dist/launcher/`.
 On macOS, PyInstaller can produce `dist/launcher/MyApp.app`.

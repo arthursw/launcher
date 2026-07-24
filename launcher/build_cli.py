@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import platform
 import shlex
 import shutil
@@ -191,12 +192,13 @@ def render_spec(plan: BuildPlan) -> str:
 
 def run_pyinstaller(plan: BuildPlan) -> None:
     """Run PyInstaller for a resolved build plan."""
-    executable = shutil.which("pyinstaller")
-    if not executable:
+    if importlib.util.find_spec("PyInstaller") is None:
         raise BuildCliError("PyInstaller is required. Run with `uv run --with pyinstaller launcher build`.")
 
     command = [
-        executable,
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "--clean",
         "--noconfirm",
         "--distpath",

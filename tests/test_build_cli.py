@@ -222,22 +222,33 @@ def test_build_rejects_icon_with_custom_spec(tmp_path, capsys):
     assert "--icon cannot be used with --spec" in capsys.readouterr().err
 
 
-def test_run_pyinstaller_uses_clean_noninteractive_build(tmp_path, monkeypatch):
-    """Launcher builds should not reuse stale PyInstaller analysis artifacts."""
+def test_run_pyinstaller_uses_current_interpreter_for_clean_noninteractive_build(tmp_path, monkeypatch):
+    """Launcher builds should use PyInstaller from the active Python environment."""
     config = write_config(tmp_path)
     plan = build_cli.create_build_plan(config_path=config)
     calls = []
-    monkeypatch.setattr(build_cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(build_cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(build_cli.subprocess, "run", lambda command, check: calls.append((command, check)))
 
     build_cli.run_pyinstaller(plan)
 
     command, check = calls[0]
     assert check is True
-    assert command[:3] == ["/bin/pyinstaller", "--clean", "--noconfirm"]
+    assert command[:5] == [build_cli.sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm"]
     assert "--distpath" in command
     assert "--workpath" in command
     assert command[-1] == plan.spec_path.as_posix()
+
+
+def test_run_pyinstaller_rejects_path_only_install(tmp_path, monkeypatch):
+    """A global PyInstaller executable must not build against another Python environment."""
+    config = write_config(tmp_path)
+    plan = build_cli.create_build_plan(config_path=config)
+    monkeypatch.setattr(build_cli.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(build_cli.shutil, "which", lambda name: f"/global/bin/{name}")
+
+    with pytest.raises(build_cli.BuildCliError, match="uv run --with pyinstaller"):
+        build_cli.run_pyinstaller(plan)
 
 
 def test_build_prints_running_and_complete_messages(tmp_path, monkeypatch, capsys):
@@ -264,7 +275,7 @@ def test_build_reports_pyinstaller_failure_with_command(tmp_path, monkeypatch, c
     def fail(command, check):
         raise build_cli.subprocess.CalledProcessError(7, command)
 
-    monkeypatch.setattr(build_cli.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(build_cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(build_cli.subprocess, "run", fail)
 
     result = build_cli.main(["--config", str(config)])
