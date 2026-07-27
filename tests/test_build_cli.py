@@ -23,7 +23,6 @@ def write_config(root: Path) -> Path:
                 "  mode: script",
                 "  script: main.py",
                 "auto_update: true",
-                "configuration: pyproject.toml",
             ]
         )
     )
@@ -358,6 +357,26 @@ def test_build_package_directory_build_uses_python_zip(tmp_path, monkeypatch):
         assert zf.read("myapp/myapp") == b"exe"
 
 
+def test_build_package_infers_raw_tag_from_project_metadata(tmp_path, monkeypatch):
+    """Package should use the configured project version when --version is omitted."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_cli.platform, "machine", lambda: "x86_64")
+    config = write_config(tmp_path)
+    config.write_text(config.read_text() + "\nconfiguration: pyproject.toml\n")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "myapp"\nversion = "1.2.3"\n'
+    )
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=subprocess.PIPE)
+    build_dir = tmp_path / "dist" / "launcher" / "myapp"
+    build_dir.mkdir(parents=True)
+    (build_dir / "myapp").write_text("exe")
+
+    artifact = build_cli.package_launcher()
+
+    assert artifact == Path("dist/MyApp-launcher-1.2.3-linux-x64.zip")
+
+
 def test_build_package_directory_build_preserves_symlinks(tmp_path, monkeypatch):
     """Directory-style build packaging should preserve POSIX symlink entries."""
     monkeypatch.chdir(tmp_path)
@@ -446,7 +465,6 @@ def test_build_upload_gitlab_success_updates_distribution(tmp_path, monkeypatch)
                 "  mode: script",
                 "  script: main.py",
                 "auto_update: true",
-                "configuration: pyproject.toml",
             ]
         )
     )
@@ -497,7 +515,6 @@ def test_build_upload_escapes_asset_names_in_distribution_urls(tmp_path, monkeyp
                 "  mode: script",
                 "  script: main.py",
                 "auto_update: true",
-                "configuration: pyproject.toml",
             ]
         )
     )

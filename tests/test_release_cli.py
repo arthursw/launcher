@@ -675,7 +675,10 @@ def test_sign_accepts_explicit_version_for_unversioned_archive(tmp_path, monkeyp
     (dist_dir / "myapp.zip").write_bytes(_release_zip_bytes())
     release_cli.keygen()
 
-    manifest_path, _, _ = release_cli.sign_release(version="v1.2.3")
+    manifest_path, _, _ = release_cli.sign_release(
+        version="v1.2.3",
+        archive=dist_dir / "myapp.zip",
+    )
 
     manifest = yaml.safe_load(manifest_path.read_text())
     assert manifest["version"] == "v1.2.3"
@@ -784,12 +787,10 @@ def test_sign_explains_unversioned_archive_name(tmp_path, monkeypatch):
     release_cli.keygen()
 
     with pytest.raises(release_cli.ReleaseCliError) as exc_info:
-        release_cli.sign_release()
+        release_cli.sign_release(archive=archive)
 
     message = str(exc_info.value)
-    assert "Could not infer release version from archive name: dist/myapp.zip" in message
-    assert "Pass --version" in message
-    assert "rename the archive" in message
+    assert "Custom application archive names require --version" in message
 
 
 def test_infer_version_from_unversioned_archive_returns_none():
@@ -830,6 +831,80 @@ def test_sign_rejects_archive_with_unsafe_symlink(tmp_path, monkeypatch):
     assert "not safe for Launcher extraction" in message
     assert "unsafe symlink target" in message
     assert "Remove unsafe symlinks" in message
+
+
+def test_sign_selects_exact_project_archive_when_launcher_zip_coexists(tmp_path, monkeypatch):
+    """Routine signing should ignore launcher packages in the same dist directory."""
+    repo = _init_release_repo(tmp_path)
+    (repo / "pyproject.toml").write_text('[project]\nname = "myapp"\nversion = "1.2.3"\n')
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "\n".join(
+            [
+                "name: MyApp",
+                "repository: https://github.com/my-org/myapp.git",
+                "configuration: pyproject.toml",
+            ]
+        )
+        + "\n"
+    )
+    dist = repo / "dist"
+    dist.mkdir()
+    app_archive = dist / "myapp-1.2.3.zip"
+    app_archive.write_bytes(_release_zip_bytes())
+    (dist / "MyApp-launcher-1.2.3-macos-arm64.zip").write_bytes(b"launcher")
+    monkeypatch.chdir(repo)
+    release_cli.keygen()
+
+    manifest_path, _, _ = release_cli.sign_release()
+
+    manifest = yaml.safe_load(manifest_path.read_text())
+    assert manifest["version"] == "1.2.3"
+    assert manifest["archive"]["name"] == app_archive.name
+
+
+def test_sign_rejects_archive_tag_that_differs_from_project(tmp_path, monkeypatch):
+    """Current release metadata must agree with the configured project version."""
+    repo = _init_release_repo(tmp_path)
+    (repo / "pyproject.toml").write_text('[project]\nname = "myapp"\nversion = "1.2.3"\n')
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "name: MyApp\n"
+        "repository: https://github.com/my-org/myapp.git\n"
+        "configuration: pyproject.toml\n"
+    )
+    dist = repo / "dist"
+    dist.mkdir()
+    (dist / "myapp-1.2.4.zip").write_bytes(_release_zip_bytes())
+    monkeypatch.chdir(repo)
+    release_cli.keygen()
+
+    with pytest.raises(release_cli.ReleaseCliError, match="Release tag mismatch"):
+        release_cli.sign_release(archive=dist / "myapp-1.2.4.zip")
+
+
+def test_verify_historical_manifest_ignores_current_project_version(tmp_path, monkeypatch):
+    """Historical verification should trust the signed manifest, not current metadata."""
+    repo = _init_release_repo(tmp_path)
+    pyproject = repo / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "myapp"\nversion = "1.2.3"\n')
+    config = repo / "packaging" / "launcher" / "application.yml"
+    config.write_text(
+        "name: MyApp\n"
+        "repository: https://github.com/my-org/myapp.git\n"
+        "configuration: pyproject.toml\n"
+    )
+    dist = repo / "dist"
+    dist.mkdir()
+    (dist / "myapp-1.2.3.zip").write_bytes(_release_zip_bytes())
+    monkeypatch.chdir(repo)
+    public_key = release_cli.keygen()
+    release_cli.sign_release()
+    pyproject.write_text('[project]\nname = "myapp"\nversion = "2.0.0"\n')
+
+    manifest = release_cli.verify_release(public_key=public_key)
+
+    assert manifest["version"] == "1.2.3"
 
 
 def test_verify_uses_config_public_key_and_default_dist_assets(tmp_path, monkeypatch):

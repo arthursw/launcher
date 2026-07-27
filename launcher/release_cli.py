@@ -29,6 +29,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from .archive_validation import ArchiveValidationError, validate_source_archive
 from .repository import parse_repository_url
+from .release_version import ReleaseVersionError, resolve_release_tag, validate_release_tag
 
 DEFAULT_DIST_DIR = Path("dist")
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
@@ -137,7 +138,7 @@ def keygen(private_key_path: Path = DEFAULT_PRIVATE_KEY, force: bool = False) ->
 
 
 def archive_release(
-    version: str,
+    version: str | None = None,
     *,
     config_path: Path | None = None,
     out_dir: Path = DEFAULT_DIST_DIR,
@@ -148,16 +149,11 @@ def archive_release(
     invocation_dir = Path.cwd().resolve()
     release_config = load_release_config_for_archive(config_path)
     archive_config = load_release_archive_config(release_config.path, repo_root)
-
-    ref_commit = git_commit_for_ref(version, repo_root)
-    head_commit = git_stdout(["rev-parse", "HEAD"], cwd=repo_root)
-    if ref_commit != head_commit:
-        raise ReleaseCliError(
-            f"Release ref {version} ({ref_commit}) does not match HEAD ({head_commit}). "
-            "Check out the release commit before building the archive."
-        )
+    version = resolve_cli_release_tag(config_path=config_path, explicit_tag=version)
 
     require_clean_tracked_tree(repo_root)
+    require_ref_at_head(version, repo_root)
+
     archive_path = resolve_release_archive_path(
         archive=archive,
         out_dir=out_dir,
@@ -192,6 +188,7 @@ def archive_release(
             append_archive_includes(archive_path, root, archive_config.include, repo_root)
 
     require_clean_tracked_tree(repo_root)
+    require_ref_at_head(version, repo_root)
     if not archive_path.is_file():
         raise ReleaseCliError(f"Archive command did not create archive: {archive_path}")
     validate_release_archive(archive_path)
@@ -315,14 +312,13 @@ def sign_release(
     if not application:
         raise ReleaseCliError("Application name is required. Pass --application or provide a config file.")
 
-    archive = infer_archive(archive, out_dir, version)
-    version = version or infer_version_from_archive(archive)
-    if not version:
-        raise ReleaseCliError(
-            f"Could not infer release version from archive name: {archive}. "
-            "Pass --version, or rename the archive so its filename contains the release version "
-            "(for example: myapp-v1.2.3.zip)."
-        )
+    archive, version = resolve_signing_archive(
+        archive=archive,
+        out_dir=out_dir,
+        explicit_tag=version,
+        config_path=config_path,
+        release_config=release_config,
+    )
     validate_release_archive(archive)
 
     private_key = load_private_key(private_key_path)
@@ -383,13 +379,8 @@ def verify_release(
 
     manifest = yaml.safe_load(manifest_bytes) or {}
     validate_release_manifest(manifest)
-    archive = infer_archive(archive, out_dir, manifest.get("version"))
     manifest_archive = manifest["archive"]
-    if archive.name != manifest_archive["name"]:
-        raise ReleaseCliError(
-            f"Archive name mismatch: manifest names {manifest_archive['name']}, "
-            f"but local archive is {archive.name}"
-        )
+    archive = resolve_manifest_archive(archive, out_dir, manifest_archive["name"])
     expected_sha256 = manifest_archive["sha256"].lower()
     actual_sha256 = sha256_file(archive)
     if actual_sha256 != expected_sha256:
@@ -405,7 +396,7 @@ def _missing_release_asset_message(kind: str, path: Path) -> str:
     return (
         f"Release {display_kind} not found: {path}\n"
         "Create and publish Launcher release metadata with:\n"
-        "  launcher release archive VERSION\n"
+        "  launcher release archive\n"
         "  launcher release sign\n"
         "  launcher release verify\n"
         "  launcher release upload\n"
@@ -460,7 +451,7 @@ def upload_release(
 
 def create_release(
     *,
-    version: str,
+    version: str | None = None,
     notes_path: Path | None = None,
     notes_text: str | None = None,
     config_path: Path | None = None,
@@ -474,6 +465,19 @@ def create_release(
     """Create a provider release with generated release notes."""
     repo_root = git_repo_root()
     require_clean_tracked_tree(repo_root)
+    version = resolve_cli_release_tag(config_path=config_path, explicit_tag=version)
+    plan = plan_create_release(
+        version=version,
+        notes_path=notes_path,
+        notes_text=notes_text,
+        config_path=config_path,
+        repository=repository,
+        title=title,
+        remote=remote,
+        require_existing_tag=not tag,
+        require_remote_tag=not push,
+    )
+
     preliminary_commands: list[list[str]] = []
     if tag:
         tag_command = ["tag", version]
@@ -486,17 +490,6 @@ def create_release(
         if not dry_run:
             run_git(push_command, cwd=repo_root)
 
-    plan = plan_create_release(
-        version=version,
-        notes_path=notes_path,
-        notes_text=notes_text,
-        config_path=config_path,
-        repository=repository,
-        title=title,
-        remote=remote,
-        require_existing_tag=not tag,
-        require_remote_tag=not push,
-    )
     if dry_run:
         return [*preliminary_commands, plan.command]
 
@@ -506,7 +499,7 @@ def create_release(
 
 def plan_create_release(
     *,
-    version: str,
+    version: str | None = None,
     notes_path: Path | None = None,
     notes_text: str | None = None,
     config_path: Path | None = None,
@@ -517,6 +510,7 @@ def plan_create_release(
     require_remote_tag: bool = True,
 ) -> ReleaseCreatePlan:
     """Build the provider command for creating a release."""
+    version = resolve_cli_release_tag(config_path=config_path, explicit_tag=version)
     repo_root = git_repo_root()
     if require_existing_tag:
         require_local_tag(version, repo_root)
@@ -572,7 +566,7 @@ def plan_create_release(
 
 def update_release_notes(
     *,
-    version: str,
+    version: str | None = None,
     notes_path: Path | None = None,
     notes_text: str | None = None,
     config_path: Path | None = None,
@@ -601,13 +595,14 @@ def update_release_notes(
 
 def plan_update_release_notes(
     *,
-    version: str,
+    version: str | None = None,
     notes_path: Path | None = None,
     notes_text: str | None = None,
     config_path: Path | None = None,
     repository: str | None = None,
 ) -> ReleaseNotesUpdatePlan:
     """Build the provider command for updating an existing release's notes."""
+    version = resolve_cli_release_tag(config_path=config_path, explicit_tag=version)
     release_config = load_release_config(config_path)
     repository = repository or release_config.repository
     provider = detect_repository_provider(repository)
@@ -890,12 +885,7 @@ def plan_upload_release(
         raise ReleaseCliError("Cannot detect GitHub or GitLab repository. Pass --repository or configure repository.")
 
     version = manifest["version"]
-    archive = infer_archive(archive, out_dir, version)
-    if archive.name != manifest["archive"]["name"]:
-        raise ReleaseCliError(
-            f"Archive name mismatch: manifest names {manifest['archive']['name']}, "
-            f"but local archive is {archive.name}"
-        )
+    archive = resolve_manifest_archive(archive, out_dir, manifest["archive"]["name"])
     if provider == "github":
         github_message = (
             "GitHub upload requires the GitHub CLI (`gh`). Install it from "
@@ -1081,6 +1071,17 @@ def git_commit_for_ref(ref: str, repo_root: Path) -> str:
         raise ReleaseCliError(f"Unknown git ref: {ref}") from e
 
 
+def require_ref_at_head(ref: str, repo_root: Path) -> None:
+    """Require a release ref to resolve to the current commit."""
+    ref_commit = git_commit_for_ref(ref, repo_root)
+    head_commit = git_stdout(["rev-parse", "HEAD"], cwd=repo_root)
+    if ref_commit != head_commit:
+        raise ReleaseCliError(
+            f"Release ref {ref} ({ref_commit}) does not match HEAD ({head_commit}). "
+            "Check out the release commit before building the archive."
+        )
+
+
 def require_clean_tracked_tree(repo_root: Path) -> None:
     """Require tracked files and the index to be clean, allowing untracked files."""
     status = git_stdout(["status", "--porcelain", "--untracked-files=no"], cwd=repo_root)
@@ -1150,11 +1151,11 @@ def release_archive_basename(release_config: ReleaseConfig, repo_root: Path) -> 
         if repo_name:
             return sanitize_archive_name(repo_name)
 
+    if release_config.application:
+        return sanitize_archive_name(release_config.application).lower()
     repo_name = repo_root.name
     if repo_name:
         return sanitize_archive_name(repo_name)
-    if release_config.application:
-        return sanitize_archive_name(release_config.application)
     return "app"
 
 
@@ -1267,6 +1268,138 @@ def display_path(path: Path) -> Path:
         return path.resolve().relative_to(Path.cwd().resolve())
     except ValueError:
         return path
+
+
+def resolve_cli_release_tag(
+    *,
+    config_path: Path | None,
+    explicit_tag: str | None,
+    artifact_tag: str | None = None,
+    required: bool = True,
+) -> str | None:
+    """Resolve a release tag and translate shared resolver errors."""
+    try:
+        return resolve_release_tag(
+            config_path=config_path,
+            explicit_tag=explicit_tag,
+            artifact_tag=artifact_tag,
+            required=required,
+        )
+    except ReleaseVersionError as exc:
+        raise ReleaseCliError(str(exc)) from exc
+
+
+def resolve_signing_archive(
+    *,
+    archive: Path | None,
+    out_dir: Path,
+    explicit_tag: str | None,
+    config_path: Path | None,
+    release_config: ReleaseConfig,
+) -> tuple[Path, str]:
+    """Select the application archive and reconcile its exact release tag."""
+    basename = release_archive_basename(release_config, Path.cwd().resolve())
+    project_or_explicit = resolve_cli_release_tag(
+        config_path=config_path,
+        explicit_tag=explicit_tag,
+        required=False,
+    )
+
+    if archive is None:
+        out_dir = out_dir.expanduser()
+        if project_or_explicit:
+            selected = out_dir / f"{basename}-{project_or_explicit}.zip"
+            if not selected.is_file():
+                raise ReleaseCliError(
+                    f"Expected application release archive not found: {selected}. "
+                    "Run `launcher release archive` first."
+                )
+            return selected, project_or_explicit
+
+        candidates = sorted(
+            path
+            for path in out_dir.glob(f"{basename}-*.zip")
+            if "-launcher-" not in path.name
+        ) if out_dir.exists() else []
+        if len(candidates) != 1:
+            if not candidates:
+                raise ReleaseCliError(
+                    f"No standard application release archive found in {out_dir}. "
+                    "Configure a project version, pass --version, or pass --archive."
+                )
+            names = ", ".join(str(path) for path in candidates)
+            raise ReleaseCliError(
+                f"Multiple application release archives found. Pass --version or --archive. Candidates: {names}"
+            )
+        selected = candidates[0]
+        artifact_tag = standard_archive_tag(selected.name, basename)
+        version = resolve_cli_release_tag(
+            config_path=config_path,
+            explicit_tag=explicit_tag,
+            artifact_tag=artifact_tag,
+        )
+        return selected, version
+
+    selected = archive.expanduser()
+    if not selected.is_file():
+        raise ReleaseCliError(f"Archive not found: {selected}")
+    if "-launcher-" in selected.name:
+        raise ReleaseCliError(f"Launcher package cannot be signed as an application archive: {selected}")
+
+    artifact_tag = standard_archive_tag(selected.name, basename, required=False)
+    if artifact_tag is None:
+        if explicit_tag is None:
+            raise ReleaseCliError(
+                f"Custom application archive names require --version: {selected.name}"
+            )
+        version = resolve_cli_release_tag(
+            config_path=config_path,
+            explicit_tag=explicit_tag,
+        )
+        return selected, version
+
+    version = resolve_cli_release_tag(
+        config_path=config_path,
+        explicit_tag=explicit_tag,
+        artifact_tag=artifact_tag,
+    )
+    return selected, version
+
+
+def standard_archive_tag(filename: str, basename: str, *, required: bool = True) -> str | None:
+    """Parse a tag from the exact standard application archive prefix."""
+    prefix = f"{basename}-"
+    if not filename.startswith(prefix):
+        if required:
+            raise ReleaseCliError(f"Application archive must start with {prefix!r}: {filename}")
+        return None
+    if not filename.endswith(".zip"):
+        raise ReleaseCliError(f"Application archive must be a ZIP file: {filename}")
+    tag = filename[len(prefix) : -4]
+    if not tag:
+        raise ReleaseCliError(f"Application archive release tag is missing: {filename}")
+    try:
+        return validate_release_tag(tag)
+    except ReleaseVersionError as exc:
+        raise ReleaseCliError(str(exc)) from exc
+
+
+def resolve_manifest_archive(archive: Path | None, out_dir: Path, archive_name: str) -> Path:
+    """Resolve the exact archive named by a verified manifest."""
+    if archive is not None:
+        selected = archive.expanduser()
+        if not selected.is_file():
+            raise ReleaseCliError(f"Archive not found: {selected}")
+        if selected.name != archive_name:
+            raise ReleaseCliError(
+                f"Archive name mismatch: manifest names {archive_name}, but local archive is {selected.name}"
+            )
+        return selected
+
+    selected = out_dir.expanduser() / archive_name
+    if not selected.is_file():
+        raise ReleaseCliError(f"Archive named by manifest not found: {selected}")
+    return selected
 
 
 def infer_archive(archive: Path | None, dist_dir: Path, version: str | None) -> Path:
@@ -1507,7 +1640,11 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     keygen_parser.add_argument("--force", action="store_true", help="Overwrite an existing private key")
 
     create_parser = subparsers.add_parser("create", help="Create the provider release")
-    create_parser.add_argument("version", help="Release version or tag, for example v1.2.3")
+    create_parser.add_argument(
+        "version",
+        nargs="?",
+        help="Exact release tag; inferred from project metadata by default",
+    )
     notes_group = create_parser.add_mutually_exclusive_group(required=True)
     notes_group.add_argument("--notes", type=Path, help="User-authored release notes Markdown file")
     notes_group.add_argument("--notes-text", help="Inline release notes text")
@@ -1527,7 +1664,11 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
         "update-notes",
         help="Update an existing provider release with regenerated launcher download links",
     )
-    update_notes_parser.add_argument("version", help="Release version or tag, for example v1.2.3")
+    update_notes_parser.add_argument(
+        "version",
+        nargs="?",
+        help="Exact release tag; inferred from project metadata by default",
+    )
     update_notes_group = update_notes_parser.add_mutually_exclusive_group(required=True)
     update_notes_group.add_argument("--notes", type=Path, help="User-authored release notes Markdown file")
     update_notes_group.add_argument("--notes-text", help="Inline release notes text")
@@ -1540,7 +1681,11 @@ def build_parser(prog: str = "launcher release") -> argparse.ArgumentParser:
     )
 
     archive_parser = subparsers.add_parser("archive", help="Build the app archive for release signing")
-    archive_parser.add_argument("version", help="Release version or git ref, for example v1.2.3")
+    archive_parser.add_argument(
+        "version",
+        nargs="?",
+        help="Exact release tag or Git ref; inferred from project metadata by default",
+    )
     archive_parser.add_argument("--config", type=Path, help=f"Launcher app config (default: {DEFAULT_CONFIG_PATH})")
     archive_parser.add_argument("--out", type=Path, default=DEFAULT_DIST_DIR, help="Output directory")
     archive_parser.add_argument("--archive", type=Path, help="Exact output archive path")
@@ -1608,8 +1753,12 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
             return 0
 
         if args.command == "create":
+            resolved_version = resolve_cli_release_tag(
+                config_path=args.config,
+                explicit_tag=args.version,
+            )
             commands = create_release(
-                version=args.version,
+                version=resolved_version,
                 notes_path=args.notes,
                 notes_text=args.notes_text,
                 config_path=args.config,
@@ -1623,22 +1772,26 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
             provider = detect_repository_provider(args.repository or load_release_config(args.config).repository)
             provider_name = release_provider_name(provider or "github")
             if args.dry_run:
-                print(f"Dry run: planned {provider_name} release creation for {args.version}.")
+                print(f"Dry run: planned {provider_name} release creation for {resolved_version}.")
                 print("No release was created.")
                 print("Commands:")
                 for command in commands:
                     print(f"  {format_shell_command(command)}")
                 return 0
 
-            print(f"Release created: {args.version}")
+            print(f"Release created: {resolved_version}")
             print("Commands:")
             for command in commands:
                 print(f"  {format_shell_command(command)}")
             return 0
 
         if args.command == "update-notes":
+            resolved_version = resolve_cli_release_tag(
+                config_path=args.config,
+                explicit_tag=args.version,
+            )
             commands = update_release_notes(
-                version=args.version,
+                version=resolved_version,
                 notes_path=args.notes,
                 notes_text=args.notes_text,
                 config_path=args.config,
@@ -1648,10 +1801,10 @@ def main(argv: Sequence[str] | None = None, prog: str = "launcher release") -> i
             provider = detect_repository_provider(args.repository or load_release_config(args.config).repository)
             provider_name = release_provider_name(provider or "github")
             if args.dry_run:
-                print(f"Dry run: planned {provider_name} release notes update for {args.version}.")
+                print(f"Dry run: planned {provider_name} release notes update for {resolved_version}.")
                 print("The release was not changed.")
             else:
-                print(f"Release notes updated: {args.version}")
+                print(f"Release notes updated: {resolved_version}")
             print("Command:")
             print(f"  {format_shell_command(commands[0])}")
             return 0

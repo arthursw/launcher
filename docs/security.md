@@ -21,7 +21,7 @@ bad code to run.
 
 Each app release must include the app archive plus two small metadata files:
 
-- `myapp-v1.2.3.zip`
+- `myapp-1.2.3.zip`
 - `launcher-manifest.yml`
 - `launcher-manifest.yml.sig`
 
@@ -30,10 +30,10 @@ The manifest describes the release:
 ```yaml
 schema_version: 2
 application: MyApp
-version: v1.2.3
+version: 1.2.3
 archive:
-  name: myapp-v1.2.3.zip
-  url: "https://github.com/my-org/myapp/releases/download/v1.2.3/myapp-v1.2.3.zip"
+  name: myapp-1.2.3.zip
+  url: "https://github.com/my-org/myapp/releases/download/1.2.3/myapp-1.2.3.zip"
   sha256: "<hash-of-the-app-archive>"
 ```
 
@@ -87,20 +87,20 @@ For each app release:
 5. upload the app archive, manifest, and signature as release assets.
 
 ```bash
-uv run launcher release archive v1.2.3
+uv run launcher release archive
 uv run launcher release sign
 uv run launcher release verify
 uv run launcher release upload
 ```
 
-By default, `archive` creates `dist/<repo>-<version>.zip` from tracked files at the requested git ref.
+By default, `archive` reads the configured static project version as the exact release tag and creates `dist/<repo>-<tag>.zip`.
 If the app needs generated assets, configure `release.archive.build` and `release.archive.include` in `packaging/launcher/application.yml`.
 Before and after packaging, Launcher checks that the requested ref resolves to `HEAD` and that tracked files are clean.
 
 By default, `sign`:
 
-- looks for one `.zip` archive in `dist/`;
-- infers the version from the archive filename, such as `myapp-v1.2.3.zip`;
+- selects the exact standard application archive for the resolved tag, ignoring launcher packages in `dist/`;
+- reconciles the project tag with any explicit tag or standard archive tag;
 - checks that the archive can be safely extracted by the packaged launcher;
 - writes the archive name, URL, and SHA-256 hash into the manifest;
 - writes `dist/launcher-manifest.yml`;
@@ -120,7 +120,7 @@ does not ask for or store GitHub/GitLab tokens.
 
 Manual upload is also fine. Open the release page on github.com or gitlab.com and add these files as release assets:
 
-- `myapp-v1.2.3.zip`
+- `myapp-1.2.3.zip`
 - `launcher-manifest.yml`
 - `launcher-manifest.yml.sig`
 

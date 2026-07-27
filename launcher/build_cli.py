@@ -21,6 +21,11 @@ import yaml
 from .config import load_config
 from .icons import ICON_FILE_NAMES, platform_icon_names
 from .release_cli import detect_repository_provider
+from .release_version import (
+    ReleaseVersionError,
+    parse_launcher_package_name,
+    resolve_release_tag,
+)
 
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
 DEFAULT_OUTPUT_DIR = Path("dist/launcher")
@@ -226,7 +231,7 @@ def run_pyinstaller(plan: BuildPlan) -> None:
 
 def package_launcher(
     *,
-    version: str,
+    version: str | None = None,
     config_path: Path | None = None,
     build_output_dir: Path = DEFAULT_OUTPUT_DIR,
     out_dir: Path = DEFAULT_PACKAGE_DIR,
@@ -234,6 +239,7 @@ def package_launcher(
 ) -> Path:
     """Package an already-built launcher executable into a distributable zip."""
     plan = create_build_plan(config_path=config_path, output_dir=build_output_dir)
+    version = resolve_build_release_tag(config_path=config_path, explicit_tag=version)
     platform_id = platform_id or current_platform_id()
     out_dir = out_dir.expanduser()
     artifact = out_dir / f"{plan.app_name}-launcher-{version}-{platform_id}.zip"
@@ -284,7 +290,7 @@ def write_directory_zip(source: Path, destination: Path) -> None:
 
 def upload_launcher_package(
     *,
-    version: str,
+    version: str | None = None,
     config_path: Path | None = None,
     repository: str | None = None,
     asset: Path | None = None,
@@ -313,7 +319,7 @@ def upload_launcher_package(
 
 def plan_upload_launcher_package(
     *,
-    version: str,
+    version: str | None = None,
     config_path: Path | None = None,
     repository: str | None = None,
     asset: Path | None = None,
@@ -322,14 +328,40 @@ def plan_upload_launcher_package(
     distribution_path: Path = DEFAULT_DISTRIBUTION_PATH,
 ) -> LauncherUploadPlan:
     """Build the provider command for uploading one launcher package."""
-    config = load_config((config_path or DEFAULT_CONFIG_PATH).expanduser())
+    resolved_config_path = (config_path or DEFAULT_CONFIG_PATH).expanduser()
+    config = load_config(resolved_config_path)
     repository = repository or config.repository
     provider = detect_repository_provider(repository)
     if not provider:
         raise BuildCliError("Cannot detect GitHub or GitLab repository. Pass --repository or configure repository.")
 
-    resolved_asset = infer_launcher_asset(version=version, asset=asset, platform_id=platform_id, dist_dir=dist_dir)
-    platform_id = platform_id or platform_id_from_asset(resolved_asset, version)
+    resolved_tag = resolve_build_release_tag(
+        config_path=resolved_config_path,
+        explicit_tag=version,
+        required=False,
+    )
+    resolved_asset = infer_launcher_asset(
+        version=resolved_tag,
+        asset=asset,
+        platform_id=platform_id,
+        dist_dir=dist_dir,
+    )
+    try:
+        parsed = parse_launcher_package_name(
+            resolved_asset.name,
+            application=config.name,
+            known_tag=resolved_tag,
+            platform_id=platform_id,
+            allow_custom=True,
+        )
+        version = resolve_release_tag(
+            config_path=resolved_config_path,
+            explicit_tag=version,
+            artifact_tag=parsed.tag,
+        )
+    except ReleaseVersionError as exc:
+        raise BuildCliError(str(exc)) from exc
+    platform_id = parsed.platform_id
     if provider == "github":
         command = [
             require_executable("gh", "GitHub launcher upload requires the GitHub CLI (`gh`)."),
@@ -409,7 +441,7 @@ def load_distribution_metadata(path: Path = DEFAULT_DISTRIBUTION_PATH) -> dict:
 
 def infer_launcher_asset(
     *,
-    version: str,
+    version: str | None,
     asset: Path | None,
     platform_id: str | None,
     dist_dir: Path,
@@ -421,6 +453,11 @@ def infer_launcher_asset(
             raise BuildCliError(f"Launcher package not found: {asset}")
         return display_path(asset)
 
+    if not version:
+        raise BuildCliError(
+            "Cannot infer a launcher package without a release tag. "
+            "Configure a static project version, pass --version, or pass --asset."
+        )
     dist_dir = dist_dir.expanduser()
     candidates = sorted(dist_dir.glob(f"*-launcher-{version}-*.zip")) if dist_dir.exists() else []
     if platform_id:
@@ -442,6 +479,23 @@ def platform_id_from_asset(asset: Path, version: str) -> str:
     if marker not in asset.name or not asset.name.endswith(".zip"):
         raise BuildCliError("Cannot infer platform from launcher package name. Pass --platform.")
     return asset.name.split(marker, 1)[1].removesuffix(".zip")
+
+
+def resolve_build_release_tag(
+    *,
+    config_path: Path | None,
+    explicit_tag: str | None,
+    required: bool = True,
+) -> str | None:
+    """Resolve a release tag and translate errors for the build CLI."""
+    try:
+        return resolve_release_tag(
+            config_path=config_path,
+            explicit_tag=explicit_tag,
+            required=required,
+        )
+    except ReleaseVersionError as exc:
+        raise BuildCliError(str(exc)) from exc
 
 
 def launcher_asset_url(repository: str, version: str, asset_name: str) -> str:
@@ -506,7 +560,7 @@ def package_parser() -> argparse.ArgumentParser:
         prog="launcher build package",
         description="Package an already-built launcher executable.",
     )
-    parser.add_argument("--version", required=True, help="Release version, for example v1.2.3")
+    parser.add_argument("--version", help="Exact release tag; inferred from project metadata by default")
     parser.add_argument("--config", type=Path, default=None, help="Launcher app config")
     parser.add_argument("--build-out", type=Path, default=DEFAULT_OUTPUT_DIR, help="Launcher build output directory")
     parser.add_argument("--out", type=Path, default=DEFAULT_PACKAGE_DIR, help="Package output directory")
@@ -520,7 +574,7 @@ def upload_parser() -> argparse.ArgumentParser:
         prog="launcher build upload",
         description="Upload a packaged launcher executable.",
     )
-    parser.add_argument("--version", required=True, help="Release version, for example v1.2.3")
+    parser.add_argument("--version", help="Exact release tag; inferred from project metadata or asset by default")
     parser.add_argument("--config", type=Path, default=None, help="Launcher app config")
     parser.add_argument("--repository", help="Repository URL used to detect GitHub or GitLab")
     parser.add_argument("--asset", type=Path, help="Launcher package asset; inferred from dist/ by default")

@@ -42,6 +42,9 @@ entrypoint:
   script: main.py
 auto_update: true
 configuration: pyproject.toml
+release:
+  # Optional. The default release tag is the exact project version.
+  # tag_template: "v{version}"
 
 trust:
   mode: signed_manifest
@@ -58,6 +61,9 @@ Use `script` for a Python file, `module` for `python -m ...`, and `project` for 
 Entrypoint paths and `configuration` are relative to the downloaded app archive root.
 If your app has optional dependencies, list their extras in `extras`.
 If the dependency file lives below the repository root, set `configuration` to that path.
+For TOML configuration files with a static `[project].version`, release commands infer the exact release tag from that value.
+The default template is `{version}`; configure `release.tag_template: "v{version}"` only when the repository deliberately uses prefixed tags.
+An explicit version/tag argument remains available when project inference is unavailable, and must match when both values exist.
 
 ## Phase 2: Create The Signing Key
 
@@ -77,7 +83,7 @@ The private key is not needed to build, package, or upload launcher executables 
 Copy it to another machine only if that machine will run `launcher release sign`, and transfer it through secure secret storage rather than Git.
 Operating-system signing uses separate Apple or Microsoft signing credentials.
 
-## Phase 3: Build, Sign, Package, And Upload The Launcher
+## Phase 3: Build, Sign, And Package The Launcher
 
 Build the launcher executable:
 
@@ -108,35 +114,24 @@ Use the signing and packaging conventions of the package manager, repository, or
 After OS signing and notarization, package the launcher:
 
 ```bash
-uv run launcher build package --version v1.2.3
+uv run launcher build package
 ```
 
-The package name includes the app name, release version, and platform:
+The package name includes the app name, exact release tag, and platform:
 
 ```text
-dist/MyApp-launcher-v1.2.3-macos-arm64.zip
-dist/MyApp-launcher-v1.2.3-macos-x64.zip
-dist/MyApp-launcher-v1.2.3-windows-x64.zip
-dist/MyApp-launcher-v1.2.3-linux-x64.zip
+dist/MyApp-launcher-1.2.3-macos-arm64.zip
+dist/MyApp-launcher-1.2.3-macos-x64.zip
+dist/MyApp-launcher-1.2.3-windows-x64.zip
+dist/MyApp-launcher-1.2.3-linux-x64.zip
 ```
 
 On macOS, `launcher build package` prefers the `.app` bundle and packages it with `ditto`.
 Otherwise it packages the PyInstaller directory-style build with Python zip tooling.
 
-Create the release and upload the launcher package:
-
-```bash
-uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
-uv run launcher build upload --version v1.2.3
-```
-
 The examples use `--notes-text` for short inline release notes.
 For longer notes, create a Markdown file such as `RELEASE_NOTES.md` and use `--notes RELEASE_NOTES.md` instead.
 Both `release create` and `release update-notes` require exactly one of `--notes-text` or `--notes`.
-
-`launcher build upload` uploads the current platform package with the provider CLI and updates `packaging/launcher/distribution.yml` only after the upload succeeds.
-That file is the source of truth for launcher download URLs used in future release notes.
-Commit and push the updated file after each platform upload so the next build machine starts with all existing platform entries.
 
 Launcher artifacts are uploaded only when the launcher executable changes.
 That is the canonical workflow.
@@ -144,47 +139,18 @@ That is the canonical workflow.
 If you prefer every release to be self-contained, you may build, package, and upload launcher artifacts for every release.
 That costs more CI time and signing work, but it makes each release page contain every installer artifact directly.
 
-### Building One Release On Multiple Machines
-
-Use one release and one tag for all platforms.
-For example, the macOS and Windows packages for `v1.2.3` are separate assets on the same `v1.2.3` release.
-
-On the first machine, create the release and upload its package as described above, then push the updated download metadata:
-
-```bash
-git add packaging/launcher/distribution.yml
-git commit -m "Record macOS launcher download"
-git push
-```
-
-On each additional machine, pull that metadata, build and upload its package, then update the existing release notes:
-
-```bash
-git pull --ff-only
-uv run --with pyinstaller launcher build
-# Sign the executable with this operating system's signing tools here.
-uv run launcher build package --version v1.2.3
-uv run launcher build upload --version v1.2.3
-uv run launcher release update-notes v1.2.3 --notes-text "Release v1.2.3"
-git add packaging/launcher/distribution.yml
-git commit -m "Record Windows launcher download"
-git push
-```
-
-`build upload` adds the current platform to `distribution.yml` without removing earlier platforms.
-`release update-notes` regenerates the download block from that file and updates the existing GitHub or GitLab release.
-It replaces the managed block and is safe to rerun.
+Build every platform package from the same clean release commit.
+Do not upload launcher packages yet: application archive creation must run while the release tag still points to `HEAD`.
 
 ## Phase 4: Create App Releases
 
 Create the provider release with user-facing notes if it does not already exist:
 
 ```bash
-uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
+uv run launcher release create --tag --push --notes-text "Release 1.2.3"
 ```
 
-Create each version only once.
-If Phase 3 already created the release before uploading a launcher package, skip this command and continue with the app archive.
+Create each release only once.
 
 Before creating a release, Launcher verifies that tracked files and the index are clean.
 Commit, stash, or revert tracked changes first so the release tag and the later source archive cannot silently omit local work.
@@ -198,13 +164,13 @@ Use `--remote` when the remote is not `origin`.
 GitHub release creation uses:
 
 ```bash
-gh release create v1.2.3 --verify-tag --notes-file <generated-notes>
+gh release create 1.2.3 --verify-tag --notes-file <generated-notes>
 ```
 
 GitLab release creation uses:
 
 ```bash
-glab release create v1.2.3 --notes-file <generated-notes>
+glab release create 1.2.3 --notes-file <generated-notes>
 ```
 
 Launcher preflights the remote GitLab tag first so `glab` cannot silently create a missing tag from the default branch.
@@ -215,10 +181,10 @@ Local launcher packages for the current version override older URLs from `packag
 ## Phase 5: Build The App Archive
 
 For simple apps, no extra archive config is needed.
-`launcher release archive VERSION` creates a zip from tracked files at the requested git ref.
+`launcher release archive` creates a zip from tracked files at the inferred release tag.
 
 ```bash
-uv run launcher release archive v1.2.3
+uv run launcher release archive
 ```
 
 Before writing the archive, Launcher verifies that the release ref resolves to `HEAD` and that tracked files are clean.
@@ -265,15 +231,15 @@ uv run launcher release sign
 uv run launcher release verify
 ```
 
-The commands infer the archive and version from `dist/` by default.
-If more than one archive exists, pass `--archive`.
-If the archive filename does not contain the version, pass `--version` to `sign`.
+`sign` selects the exact standard application archive for the resolved tag, even when launcher packages are also present in `dist/`.
+For a custom application archive name, pass both `--archive` and `--version`; the explicit tag must match project metadata when inference is available.
+`verify` and `upload` use the exact archive name recorded in the signed manifest.
 
 The signed release assets are:
 
 ```text
 dist/
-|-- myapp-v1.2.3.zip
+|-- myapp-1.2.3.zip
 |-- launcher-manifest.yml
 `-- launcher-manifest.yml.sig
 ```
@@ -287,8 +253,8 @@ uv run launcher release upload
 GitHub upload uses:
 
 ```bash
-gh release upload v1.2.3 \
-  dist/myapp-v1.2.3.zip \
+gh release upload 1.2.3 \
+  dist/myapp-1.2.3.zip \
   dist/launcher-manifest.yml \
   dist/launcher-manifest.yml.sig \
   --clobber
@@ -297,11 +263,30 @@ gh release upload v1.2.3 \
 GitLab upload uses:
 
 ```bash
-glab release upload v1.2.3 \
-  dist/myapp-v1.2.3.zip \
+glab release upload 1.2.3 \
+  dist/myapp-1.2.3.zip \
   dist/launcher-manifest.yml \
   dist/launcher-manifest.yml.sig \
   --use-package-registry
 ```
 
 After these files are published, users can open the existing launcher and it will find, verify, install, and start the new app release.
+
+## Phase 7: Upload Launcher Packages
+
+After the application archive is published, upload each signed launcher package:
+
+```bash
+uv run launcher build upload
+```
+
+The command infers the tag and platform from project metadata and the standard package filename, uploads the package, and updates `packaging/launcher/distribution.yml` only after success.
+Commit and push that metadata change before uploading from another machine so platform updates do not overwrite each other.
+
+After the final platform upload, update the release notes once:
+
+```bash
+uv run launcher release update-notes --notes-text "Release 1.2.3"
+```
+
+`release update-notes` regenerates the managed download block from `distribution.yml` and is safe to rerun.

@@ -9,6 +9,7 @@ import yaml
 
 from .paths import get_runtime_data_dir
 from .repository import default_release_asset_url_templates
+from .release_version import ReleaseVersionError, validate_release_config
 
 VALID_CERT_EXTENSIONS = (".pem", ".crt", ".cer")
 ENTRYPOINT_MODES = {"script", "module", "project"}
@@ -475,6 +476,12 @@ def load_config(config_path: Path) -> AppConfig:
 
     if not data:
         raise ValueError("Configuration file is empty")
+    if not isinstance(data, dict):
+        raise ValueError("Configuration file must contain a mapping")
+    try:
+        validate_release_config(data)
+    except ReleaseVersionError as exc:
+        raise ValueError(str(exc)) from exc
 
     # Check required fields
     required_fields = ["name", "entrypoint"]

@@ -22,14 +22,22 @@ uv run launcher config check
 uv run launcher release keygen
 ```
 
+Release commands read the static `[project].version` from the TOML file named by `configuration` and use that exact value as the release tag.
+Set `release.tag_template: "v{version}"` only when the repository deliberately uses prefixed tags.
+Explicit version arguments remain available for dynamic or non-TOML projects and must match inferred values when both are present.
+
 Build the launcher executable when it changes:
 
 ```bash
 uv run --with pyinstaller launcher build
 # sign/notarize the built launcher here
-uv run launcher build package --version v1.2.3
-uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
-uv run launcher build upload --version v1.2.3
+uv run launcher build package
+uv run launcher release create --tag --push --notes-text "Release 1.2.3"
+uv run launcher release archive
+uv run launcher release sign
+uv run launcher release verify
+uv run launcher release upload
+uv run launcher build upload
 ```
 
 Supply PyInstaller through the same `uv run` invocation so it can import the installed `launcher` package.
@@ -40,14 +48,14 @@ Each successful `launcher build upload` updates `packaging/launcher/distribution
 After the final platform upload, update the existing release with links for every recorded platform:
 
 ```bash
-uv run launcher release update-notes v1.2.3 --notes-text "Release v1.2.3"
+uv run launcher release update-notes --notes-text "Release 1.2.3"
 ```
 
 Publish a normal app-only release:
 
 ```bash
-uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
-uv run launcher release archive v1.2.3
+uv run launcher release create --tag --push --notes-text "Release 1.2.3"
+uv run launcher release archive
 uv run launcher release sign
 uv run launcher release verify
 uv run launcher release upload

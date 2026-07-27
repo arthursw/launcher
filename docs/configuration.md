@@ -200,10 +200,25 @@ At runtime, Launcher downloads `archive.url` from the verified manifest and chec
 Configure `manifest_url`, `signature_url`, and `archive_url` only for custom hosting, custom asset paths, renamed files, or endpoint-only configs that do not set `repository`.
 `{version}` is replaced with the release tag the launcher is trying to run, and `{archive_name}` is replaced with the archive filename in `dist/`.
 
+## Release Tag
+
+Release publishing commands read the static `[project].version` from the TOML file named by `configuration`.
+The exact project version is the release tag by default, so project version `1.2.3` produces tag `1.2.3`.
+
+Projects that deliberately use another tag convention can configure one template:
+
+```yaml
+release:
+  tag_template: "v{version}"
+```
+
+The template must contain exactly one `{version}` placeholder and produce a Git tag that is safe inside an artifact filename.
+Explicit CLI tags remain available when project inference is unavailable, and must exactly match project metadata when both are present.
+
 ## Release Archive Fields
 
-`release.archive` is optional packaging-only config read by `launcher release archive VERSION`.
-When it is omitted, Launcher creates `dist/<repo>-<version>.zip` from tracked files at the requested git ref.
+`release.archive` is optional packaging-only config read by `launcher release archive`.
+When it is omitted, Launcher creates `dist/<repo>-<tag>.zip` from tracked files at the resolved tag.
 The requested ref must resolve to `HEAD`, and tracked files must be clean before and after packaging.
 
 Use `build` for generated assets that are not tracked by git:
@@ -241,7 +256,7 @@ The script is called as `python <script> <version> <archive_path>` and must crea
 ## Optional Fields
 
 ```yaml
-version: v1.2.3
+version: 1.2.3
 entrypoint:
   mode: module
   module: my_app
