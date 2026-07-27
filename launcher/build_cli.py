@@ -19,6 +19,7 @@ from urllib.parse import quote
 import yaml
 
 from .config import load_config
+from .icons import ICON_FILE_NAMES, platform_icon_names
 from .release_cli import detect_repository_provider
 
 DEFAULT_CONFIG_PATH = Path("packaging/launcher/application.yml")
@@ -83,10 +84,17 @@ def create_build_plan(
     config_dir = config_path.parent
     datas = [(config_path.resolve().as_posix(), "packaging/launcher")]
 
+    explicit_icon = icon_path is not None
     icon_path = _resolve_icon(icon_path) if icon_path else _find_icon(config_dir)
     if icon_path:
         icon_path = icon_path.resolve()
         datas.append((icon_path.as_posix(), "resources"))
+        if not explicit_icon:
+            for name in ICON_FILE_NAMES:
+                runtime_icon = (config_dir / name).resolve()
+                runtime_icon_data = (runtime_icon.as_posix(), "resources")
+                if runtime_icon.is_file() and runtime_icon_data not in datas:
+                    datas.append(runtime_icon_data)
 
     output_dir = output_dir.expanduser().resolve()
     build_dir = output_dir / DEFAULT_BUILD_DIR_NAME
@@ -609,14 +617,7 @@ def format_shell_command(command: Sequence[str]) -> str:
 
 
 def _find_icon(config_dir: Path) -> Path | None:
-    if platform.system() == "Darwin":
-        names = ("app.icns", "icon_128x128.png")
-    elif platform.system() == "Windows":
-        names = ("app.ico", "icon_128x128.png", "app.icns")
-    else:
-        names = ("icon_128x128.png", "app.icns", "app.ico")
-
-    for name in names:
+    for name in platform_icon_names():
         path = config_dir / name
         if path.is_file():
             return path

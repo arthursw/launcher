@@ -12,6 +12,7 @@ from typing import Optional, Sequence
 
 from launcher.config import load_config
 from launcher.gui.base import BaseGUI
+from launcher.icons import runtime_icon_paths
 from launcher.repository import default_release_asset_url_templates
 from launcher.worker import EventType, LauncherWorker, create_queues
 
@@ -43,16 +44,17 @@ def get_gui(
     event_queue,
     response_queue,
     app_name: str,
+    icon_paths: Sequence[Path] = (),
 ) -> BaseGUI:
     """Get the appropriate GUI instance."""
     if gui_type == "tkinter":
         from launcher.gui.tkinter_gui import TkinterGUI
 
-        return TkinterGUI(event_queue, response_queue, app_name)
+        return TkinterGUI(event_queue, response_queue, app_name, icon_paths)
     if gui_type == "qt":
         from launcher.gui.qt_gui import QtGUI
 
-        return QtGUI(event_queue, response_queue, app_name)
+        return QtGUI(event_queue, response_queue, app_name, icon_paths)
     if gui_type == "textual":
         from launcher.gui.textual_gui import TextualGUI
 
@@ -232,7 +234,7 @@ def run_launcher(argv: Sequence[str] | None = None, config_path: Optional[Path] 
     worker = LauncherWorker(config_path, event_queue, response_queue)
 
     try:
-        gui = get_gui(gui_type, event_queue, response_queue, app_name)
+        gui = get_gui(gui_type, event_queue, response_queue, app_name, runtime_icon_paths(config_path))
     except ImportError as e:
         logger.error("Failed to import GUI: %s", e)
         print(

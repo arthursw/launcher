@@ -128,6 +128,7 @@ def test_launcher_release_subcommand_delegates_to_release_cli(monkeypatch):
 def test_launcher_run_subcommand_uses_runtime_launcher(monkeypatch, tmp_path):
     """`launcher run` should invoke the existing runtime path explicitly."""
     config = tmp_path / "application.yml"
+    icon = tmp_path / "icon_128x128.png"
     config.write_text(
         "\n".join(
             [
@@ -140,6 +141,7 @@ def test_launcher_run_subcommand_uses_runtime_launcher(monkeypatch, tmp_path):
             ]
         )
     )
+    icon.write_bytes(b"png")
     calls = []
 
     class FakeWorker:
@@ -163,13 +165,18 @@ def test_launcher_run_subcommand_uses_runtime_launcher(monkeypatch, tmp_path):
         def destroy(self):
             calls.append(("destroy", None))
 
+    def fake_get_gui(gui_type, event_queue, response_queue, app_name, icon_paths):
+        calls.append(("gui_config", (gui_type, app_name, icon_paths)))
+        return FakeGui()
+
     monkeypatch.setattr(package_main, "LauncherWorker", FakeWorker)
-    monkeypatch.setattr(package_main, "get_gui", lambda *args: FakeGui())
+    monkeypatch.setattr(package_main, "get_gui", fake_get_gui)
 
     result = package_main.main(["run", "--no-gui", "--config", str(config)])
 
     assert result == 0
     assert ("worker", config.resolve()) in calls
+    assert ("gui_config", ("console", "TestApp", (icon.resolve(),))) in calls
 
 
 def test_config_check_accepts_valid_config(tmp_path, capsys):

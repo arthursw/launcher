@@ -1,7 +1,8 @@
 """Qt (PySide6) GUI implementation for the launcher."""
 
 import queue
-from typing import Optional, cast
+from pathlib import Path
+from typing import Optional, Sequence, cast
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
 )
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 
 from .base import BaseGUI
 from ..worker import WorkerEvent, GUIResponse
@@ -161,8 +162,11 @@ class QtGUI(BaseGUI):
         event_queue: queue.Queue[WorkerEvent],
         response_queue: queue.Queue[GUIResponse],
         app_name: str = "Launcher",
+        icon_paths: Sequence[Path] = (),
     ) -> None:
         super().__init__(event_queue, response_queue, app_name)
+        self._icon_paths = tuple(icon_paths)
+        self._window_icon: Optional[QIcon] = None
         self._app: Optional[QApplication] = None
         self._window: Optional[QMainWindow] = None
         self._progress_bar: Optional[QProgressBar] = None
@@ -179,8 +183,17 @@ class QtGUI(BaseGUI):
         else:
             self._app = cast(QApplication, QApplication.instance())
 
+        for icon_path in self._icon_paths:
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                self._window_icon = icon
+                self._app.setWindowIcon(icon)
+                break
+
         # Main window
         self._window = QMainWindow()
+        if self._window_icon is not None:
+            self._window.setWindowIcon(self._window_icon)
         self._window.setWindowTitle(f"{self.app_name} - Launcher")
         self._window.setMinimumSize(600, 400)
 

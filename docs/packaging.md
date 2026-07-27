@@ -29,6 +29,9 @@ packaging/
     `-- icon_128x128.png
 ```
 
+Add `app.ico` for a native Windows executable and window icon, and add `app.icns` for a native macOS app-bundle icon.
+Launcher bundles every available standard icon and applies the appropriate icon to its Tkinter or Qt window at runtime; `icon_128x128.png` is the portable window-icon fallback on macOS and Linux.
+
 Edit `packaging/launcher/application.yml` for your app:
 
 ```yaml

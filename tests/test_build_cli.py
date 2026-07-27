@@ -178,10 +178,11 @@ def test_build_plan_on_macos_auto_uses_png_and_prefers_icns(tmp_path, monkeypatc
 
     assert plan.icon_path == icns_icon.resolve()
     assert (str(icns_icon.resolve()), "resources") in plan.datas
+    assert (str(png_icon.resolve()), "resources") in plan.datas
 
 
 def test_build_plan_on_windows_prefers_ico(tmp_path, monkeypatch):
-    """Windows should prefer the native ICO build icon."""
+    """Windows should prefer ICO for the executable and bundle the PNG GUI fallback."""
     monkeypatch.setattr(build_cli.platform, "system", lambda: "Windows")
     config = write_config(tmp_path)
     png_icon = config.parent / "icon_128x128.png"
@@ -192,6 +193,8 @@ def test_build_plan_on_windows_prefers_ico(tmp_path, monkeypatch):
     plan = build_cli.create_build_plan(config_path=config)
 
     assert plan.icon_path == ico_icon.resolve()
+    assert (str(ico_icon.resolve()), "resources") in plan.datas
+    assert (str(png_icon.resolve()), "resources") in plan.datas
 
 
 def test_build_spec_only_allows_explicit_icon(tmp_path, monkeypatch):
@@ -206,6 +209,21 @@ def test_build_spec_only_allows_explicit_icon(tmp_path, monkeypatch):
     spec = tmp_path / "dist" / "launcher" / "build" / "launcher.spec"
     assert result == 0
     assert f"icon={str(icon.resolve())!r}" in spec.read_text()
+
+
+def test_explicit_build_icon_excludes_default_runtime_icons(tmp_path):
+    """An explicit icon override should also be the only bundled runtime icon."""
+    config = write_config(tmp_path)
+    default_icon = config.parent / "icon_128x128.png"
+    explicit_icon = tmp_path / "custom.ico"
+    default_icon.write_bytes(b"default")
+    explicit_icon.write_bytes(b"explicit")
+
+    plan = build_cli.create_build_plan(config_path=config, icon_path=explicit_icon)
+
+    assert plan.icon_path == explicit_icon.resolve()
+    assert (str(explicit_icon.resolve()), "resources") in plan.datas
+    assert (str(default_icon.resolve()), "resources") not in plan.datas
 
 
 def test_build_rejects_icon_with_custom_spec(tmp_path, capsys):

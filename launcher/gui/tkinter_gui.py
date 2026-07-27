@@ -1,9 +1,11 @@
 """Tkinter GUI implementation for the launcher."""
 
 import queue
+import platform
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
-from typing import Optional
+from typing import Optional, Sequence
 
 from .base import BaseGUI
 from ..worker import WorkerEvent, GUIResponse
@@ -120,8 +122,11 @@ class TkinterGUI(BaseGUI):
         event_queue: queue.Queue[WorkerEvent],
         response_queue: queue.Queue[GUIResponse],
         app_name: str = "Launcher",
+        icon_paths: Sequence[Path] = (),
     ) -> None:
         super().__init__(event_queue, response_queue, app_name)
+        self._icon_paths = tuple(icon_paths)
+        self._icon_image: Optional[tk.PhotoImage] = None
         self._root: Optional[tk.Tk] = None
         self._progress_bar: Optional[ttk.Progressbar] = None
         self._progress_label: Optional[ttk.Label] = None
@@ -131,6 +136,7 @@ class TkinterGUI(BaseGUI):
     def _create_window(self) -> None:
         """Create the main window."""
         self._root = tk.Tk()
+        self._apply_window_icon()
         self._root.title(f"{self.app_name} - Launcher")
         self._root.geometry("600x400")
         self._root.minsize(400, 300)
@@ -190,6 +196,23 @@ class TkinterGUI(BaseGUI):
 
         # Handle window close
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _apply_window_icon(self) -> None:
+        """Apply the first icon format supported by the current Tk platform."""
+        if not self._root:
+            return
+
+        for icon_path in self._icon_paths:
+            try:
+                if platform.system() == "Windows" and icon_path.suffix.lower() == ".ico":
+                    self._root.iconbitmap(default=str(icon_path))
+                    return
+                if icon_path.suffix.lower() == ".png":
+                    self._icon_image = tk.PhotoImage(file=str(icon_path))
+                    self._root.iconphoto(True, self._icon_image)
+                    return
+            except tk.TclError:
+                continue
 
     def _update_progress(self, current: int, total: int, message: str) -> None:
         """Update progress bar and label."""
