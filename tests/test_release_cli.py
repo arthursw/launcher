@@ -1490,6 +1490,22 @@ def test_release_create_github_uses_verify_tag_and_generated_notes(tmp_path, mon
     assert plan.notes_file.read_text() == "Release notes\n"
 
 
+def test_release_create_rejects_dirty_tracked_files_before_tagging(tmp_path, monkeypatch):
+    """Release creation should fail before changing tags when tracked files are dirty."""
+    repo = _init_release_repo(tmp_path)
+    (repo / "main.py").write_text("print('dirty')\n")
+    monkeypatch.chdir(repo)
+
+    with pytest.raises(release_cli.ReleaseCliError, match="tracked files are dirty"):
+        release_cli.create_release(
+            version="v1.2.4",
+            notes_text="Release notes",
+            tag=True,
+        )
+
+    assert _git(repo, "tag", "--list", "v1.2.4") == ""
+
+
 @pytest.mark.parametrize(
     ("repository", "executable_name", "expected_command"),
     [
@@ -1653,7 +1669,11 @@ def test_release_create_tag_and_push_are_explicit(tmp_path, monkeypatch):
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
     monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
-    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+    monkeypatch.setattr(
+        release_cli,
+        "git_stdout",
+        lambda args, cwd=None: "" if args[:2] == ["status", "--porcelain"] else "ok",
+    )
     calls = []
     monkeypatch.setattr(release_cli, "run_git", lambda args, cwd: calls.append(args))
     monkeypatch.setattr(release_cli, "run_release_create_command", lambda command, provider, version, repository: "")
@@ -1682,6 +1702,8 @@ def test_release_create_dry_run_with_push_does_not_require_remote_tag(tmp_path, 
     monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
 
     def fake_git_stdout(args, cwd=None):
+        if args[:2] == ["status", "--porcelain"]:
+            return ""
         if args[:2] == ["ls-remote", "--exit-code"]:
             raise AssertionError("remote tag preflight should be skipped when --push is planned")
         return "ok"
@@ -1710,7 +1732,11 @@ def test_release_create_dry_run_prints_planned_command_without_provider_call(tmp
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
     monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
-    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+    monkeypatch.setattr(
+        release_cli,
+        "git_stdout",
+        lambda args, cwd=None: "" if args[:2] == ["status", "--porcelain"] else "ok",
+    )
 
     def fail(*args, **kwargs):
         raise AssertionError("provider CLI should not run")
@@ -1738,7 +1764,11 @@ def test_release_create_cli_accepts_notes_text(tmp_path, monkeypatch, capsys):
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
     monkeypatch.setattr(release_cli, "git_repo_root", lambda: tmp_path)
-    monkeypatch.setattr(release_cli, "git_stdout", lambda args, cwd=None: "ok")
+    monkeypatch.setattr(
+        release_cli,
+        "git_stdout",
+        lambda args, cwd=None: "" if args[:2] == ["status", "--porcelain"] else "ok",
+    )
 
     result = release_cli.main(["create", "v1.2.3", "--notes-text", "Release v1.2.3", "--dry-run"])
 

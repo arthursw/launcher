@@ -473,6 +473,7 @@ def create_release(
 ) -> list[list[str]]:
     """Create a provider release with generated release notes."""
     repo_root = git_repo_root()
+    require_clean_tracked_tree(repo_root)
     preliminary_commands: list[list[str]] = []
     if tag:
         tag_command = ["tag", version]
@@ -1085,7 +1086,7 @@ def require_clean_tracked_tree(repo_root: Path) -> None:
     status = git_stdout(["status", "--porcelain", "--untracked-files=no"], cwd=repo_root)
     if status:
         raise ReleaseCliError(
-            "Git tracked files are dirty. Commit or revert tracked changes before building a release archive."
+            "Git tracked files are dirty. Commit, stash, or revert tracked changes before creating or packaging a release."
         )
 
 

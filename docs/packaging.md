@@ -183,6 +183,10 @@ uv run launcher release create v1.2.3 --notes-text "Release v1.2.3"
 Create each version only once.
 If Phase 3 already created the release before uploading a launcher package, skip this command and continue with the app archive.
 
+Before creating a release, Launcher verifies that tracked files and the index are clean.
+Commit, stash, or revert tracked changes first so the release tag and the later source archive cannot silently omit local work.
+Untracked files are allowed.
+
 By default, the tag must already exist locally and on the configured remote.
 To create a local lightweight tag at `HEAD`, pass `--tag`.
 To push the tag before release creation, pass `--push`.
