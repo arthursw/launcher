@@ -965,15 +965,11 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "toml" },
+    { name = "typing-extensions" },
     { name = "wetlands" },
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-]
 qt = [
     { name = "pyside6" },
 ]
@@ -981,21 +977,33 @@ textual = [
     { name = "textual" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=42.0" },
     { name = "keyring", specifier = ">=24.0" },
     { name = "pyside6", marker = "extra == 'qt'", specifier = ">=6.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31" },
     { name = "textual", marker = "extra == 'textual'", specifier = ">=0.40" },
     { name = "toml", specifier = ">=0.10" },
+    { name = "typing-extensions", specifier = ">=4.0" },
     { name = "wetlands", specifier = ">=1.1.6" },
 ]
-provides-extras = ["dev", "qt", "textual"]
+provides-extras = ["qt", "textual"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=7.0" },
+    { name = "pytest-cov", specifier = ">=4.0" },
+    { name = "pytest-mock", specifier = ">=3.0" },
+]
 
 [[package]]
 name = "zipp"
