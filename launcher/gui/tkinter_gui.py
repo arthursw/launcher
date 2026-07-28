@@ -114,6 +114,81 @@ class InitTimeoutDialog(simpledialog.Dialog):
         self.cancel()
 
 
+class ExistingInstallationDialog(simpledialog.Dialog):
+    """Dialog for choosing how to handle an existing installation."""
+
+    def __init__(self, parent, path: str, title: str = "Existing Installation"):
+        self.path = path
+        self.action = "cancel"
+        super().__init__(parent, title)
+
+    def body(self, master):
+        ttk.Label(
+            master,
+            text=f"An existing installation was found at:\n{self.path}",
+            wraplength=500,
+        ).pack(padx=20, pady=10)
+        return None
+
+    def buttonbox(self):
+        box = ttk.Frame(self)
+        ttk.Button(box, text="Use Existing", command=self._use).pack(side="left", padx=5, pady=5)
+        ttk.Button(box, text="Replace", command=self._replace).pack(side="left", padx=5, pady=5)
+        ttk.Button(box, text="Cancel", command=self.cancel).pack(side="left", padx=5, pady=5)
+        box.pack()
+
+    def _use(self):
+        self.action = "use"
+        self.ok()
+
+    def _replace(self):
+        self.action = "replace"
+        self.ok()
+
+
+class InstallLocationDialog(simpledialog.Dialog):
+    """Dialog with an editable exact installation root."""
+
+    def __init__(self, parent, app_name: str, default_path: str):
+        self.app_name = app_name
+        self.default_path = default_path
+        self.path: Optional[str] = None
+        super().__init__(parent, "Installation Location")
+
+    def body(self, master):
+        ttk.Label(
+            master,
+            text=f"Choose where to install {self.app_name}'s sources and Python environment:",
+            wraplength=500,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        self.path_entry = ttk.Entry(master, width=60)
+        self.path_entry.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        self.path_entry.insert(0, self.default_path)
+        ttk.Button(master, text="Browse...", command=self._browse).grid(row=1, column=1, padx=5, pady=5)
+        master.columnconfigure(0, weight=1)
+        return self.path_entry
+
+    def _browse(self):
+        initial = Path(self.path_entry.get()).expanduser()
+        while not initial.exists() and initial != initial.parent:
+            initial = initial.parent
+        selected = filedialog.askdirectory(
+            parent=self,
+            title=f"Choose where to install {self.app_name}",
+            initialdir=str(initial),
+            mustexist=False,
+        )
+        if selected:
+            self.path_entry.delete(0, tk.END)
+            self.path_entry.insert(0, selected)
+
+    def validate(self):
+        return bool(self.path_entry.get().strip())
+
+    def apply(self):
+        self.path = self.path_entry.get().strip()
+
+
 class TkinterGUI(BaseGUI):
     """Tkinter-based GUI for the launcher."""
 
@@ -265,6 +340,34 @@ class TkinterGUI(BaseGUI):
         dialog = InitTimeoutDialog(self._root, message)
         self._submit_init_timeout_response(request_id, dialog.action)
 
+    def _show_install_location_dialog(self, request_id: str, default_path: str) -> None:
+        """Show the first-run directory chooser."""
+        if not self._root:
+            return
+        dialog = InstallLocationDialog(self._root, self.app_name, default_path)
+        self._submit_install_location_response(request_id, dialog.path)
+
+    def _show_existing_installation_dialog(self, request_id: str, path: str) -> None:
+        """Show use/replace/cancel choices."""
+        if not self._root:
+            return
+        dialog = ExistingInstallationDialog(self._root, path)
+        self._submit_existing_installation_response(request_id, dialog.action)
+
+    def _show_state_storage_dialog(self, request_id: str, message: str, portable_path: str) -> None:
+        """Offer portable state storage."""
+        if not self._root:
+            return
+        use_portable = messagebox.askyesno(
+            "Launcher State Storage",
+            f"{message}\n\nUse Portable Mode and store settings at:\n{portable_path}?",
+            parent=self._root,
+        )
+        self._submit_state_storage_response(
+            request_id,
+            "portable" if use_portable else "cancel",
+        )
+
     def _show_error(self, message: str) -> None:
         """Show error message."""
         if self._progress_bar:
@@ -295,6 +398,13 @@ class TkinterGUI(BaseGUI):
             self._close_button.configure(state="normal")
 
         self._append_log("Launcher complete. Application is running.")
+
+    def _show_cancelled(self, message: str) -> None:
+        """Close after a user cancellation."""
+        self._append_log(f"Cancelled: {message}")
+        if self._root:
+            messagebox.showinfo("Cancelled", message, parent=self._root)
+        self.destroy()
 
     def _process_events_once(self) -> bool:
         """Process Tkinter events."""

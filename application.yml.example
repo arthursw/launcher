@@ -14,9 +14,12 @@ entrypoint:
 #   mode: project
 #   command: example-app-gui
 #   project_directory: .
-# Optional. Omit for the portable default. Relative paths are resolved inside
-# the launcher's per-app runtime data directory, not the process working directory.
+# Optional default for the first-run installation chooser. The exact selected
+# root contains both sources/ and wetlands/. Relative values are resolved below
+# the per-user OS application-data directory.
 # path: "."
+# Set false to accept the resolved default without showing the location chooser.
+ask_install_location: true
 
 # Use repository inference for GitHub/GitLab, or provide explicit endpoints.
 repository: git@github.com:owner/exampleapp.git

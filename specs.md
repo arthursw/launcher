@@ -36,8 +36,7 @@ building, and release assets:
   provider API tokens.
 
 The packaged app config is immutable at runtime. Mutable values such as the
-installed version, dependency hash, and proxy metadata are stored in OS app
-data:
+installation root, installed version, dependency hash, and proxy metadata are stored in OS app data:
 
 - macOS: `~/Library/Application Support/<AppName>/launcher-state.yml`
 - Windows: `%APPDATA%\<AppName>\launcher-state.yml`
@@ -45,6 +44,13 @@ data:
 
 Proxy passwords are never stored in YAML. They are stored through the OS
 keychain only when the user opts in; otherwise credentials are session-only.
+
+On first launch, the user chooses one exact runtime root for versioned sources and the app-specific Wetlands environment manager.
+The default is per-user OS application data and may be overridden by `path`.
+Set `ask_install_location: false` to accept that default without a location prompt.
+The root contains `sources/`, `wetlands/`, and a Launcher ownership marker.
+Matching existing installations offer Use Existing, Replace, and Cancel; unrelated nonempty directories are rejected.
+If OS state storage is unwritable, the user may explicitly opt into a state sidecar beside the launcher.
 
 The launched application remains running after successful initialization. The
 launcher only terminates the child process on startup failure or cancellation.
@@ -82,7 +88,8 @@ entrypoint:                                                              # How t
   mode: script
   script: main.py
   args: []
-path: "."                                                                # Optional directory in which to extract the sources; defaults to ".". Relative paths are resolved inside the launcher's per-app runtime data directory.
+path: "."                                                                # Optional default for the unified sources-and-environments installation root.
+ask_install_location: true                                               # Ask for the exact root on first launch; false accepts path automatically.
 version: v0.3.50-295e42238d99f3e133cb0e788d6fb4d7a8139d31     # The version of the installed app (created automatically when auto_update=true)
 auto_update: true                                                        # Whether to auto-update if a new version is available on github or gitlab
 configuration: pyproject.toml                                            # The dependency config file in the downloaded sources. Can be null only when no dependency config exists.
@@ -173,14 +180,15 @@ This launcher will:
   `packaging/launcher/application.yml` during development and build tooling
 - if `auto_update`: check the latest release from `api`/`releases_endpoint` and use this latest release (which has a corresponding tag) in the following format: `tagname`
 - otherwise: set the current version from the `version` attribute (`version` is only required is `auto_update` is false).
-- in all cases: check if the sources for this current version (`appname-tagname`) exist at `path`; relative `path` values are resolved inside the launcher's per-app runtime data directory.
-- if the sources do not exist: download and verify the signed manifest/signature, download `archive.url` from the manifest, verify `archive.sha256`, and extract the archive in the resolved `path`
+- on first launch, resolve or ask for the runtime installation root and save it in OS state
+- in all cases: check if the sources for this current version (`appname-tagname`) exist under `<installation-root>/sources/`
+- if the sources do not exist: download and verify the signed manifest/signature, download `archive.url` from the manifest, verify `archive.sha256`, and extract the archive under `<installation-root>/sources/`
 - save mutable runtime values such as installed version in OS app data, not in
   the packaged config
 - get or create the environment and execute the configured entrypoint:
   - check if the ExampleApp environment exists (remove special chars from the name to make it a valid env name)
   - if the environment does not exists: 
-    - create the environment and install the dependencies defined in the `configuration` file in the sources (parse the `path`/`appname-tagname`/`configuration` file, usually a `pyproject.toml`, but can also be a `pixi.toml`, `environment.yml` or `requirements.txt` file.)
+    - create the environment below `<installation-root>/wetlands/` and install the dependencies defined by `configuration` in the selected sources
     - install optional dependency groups listed in `extras` when supported by the dependency config
     - run the python install script defined by the `install` attribute if any
   - if the environment already exists but new sources were just downloaded and `reinstall_on_update` is true:

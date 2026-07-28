@@ -110,6 +110,7 @@ class TestAppConfig:
         assert config.entrypoint.mode == "script"
         assert config.entrypoint.script == "main.py"
         assert config.path == "."
+        assert config.ask_install_location is True
         assert config.auto_update is True
         assert config.configuration == "pyproject.toml"
         assert config.extras == []
@@ -155,7 +156,7 @@ class TestAppConfig:
             repository="git@github.com:owner/repo.git",
             version="v1.0.0"
         )
-        assert config.sources_path == Path("/tmp/apps/testapp-v1.0.0")
+        assert config.sources_path == Path("/tmp/apps").resolve() / "sources" / "testapp-v1.0.0"
 
     def test_script_path(self):
         """Test script path generation."""
@@ -166,7 +167,7 @@ class TestAppConfig:
             repository="git@github.com:owner/repo.git",
             version="v1.0.0"
         )
-        assert config.script_path == Path("/tmp/apps/testapp-v1.0.0/src/main.py")
+        assert config.script_path == Path("/tmp/apps").resolve() / "sources" / "testapp-v1.0.0" / "src" / "main.py"
 
     def test_config_file_path_is_none_when_configuration_disabled(self):
         """configuration: null explicitly disables dependency config loading."""
@@ -192,11 +193,11 @@ class TestAppConfig:
             configuration="backend/pyproject.toml",
         )
 
-        assert config.working_directory_path == Path("/tmp/apps/testapp-v1.0.0/backend")
+        assert config.working_directory_path == Path("/tmp/apps").resolve() / "sources" / "testapp-v1.0.0" / "backend"
 
     def test_infers_pythonpath_from_working_directory_src(self, tmp_path):
         """A src-layout project should make src and project root importable."""
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         (sources / "backend" / "src").mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
@@ -214,7 +215,7 @@ class TestAppConfig:
 
     def test_explicit_working_directory_and_pythonpath(self, tmp_path):
         """Explicit launch paths override inferred defaults."""
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
@@ -239,11 +240,14 @@ class TestAppConfig:
             repository="git@github.com:owner/repo.git",
             version="release/v1.0.0",
         )
-        assert config.sources_path == Path("/tmp/apps/testapp-release_v1.0.0")
+        assert config.sources_path == Path("/tmp/apps").resolve() / "sources" / "testapp-release_v1.0.0"
 
     def test_relative_sources_path_uses_app_data_dir(self, tmp_path, monkeypatch):
         """Relative source roots should not depend on the process working directory."""
-        monkeypatch.setenv("LAUNCHER_STATE_DIR", str(tmp_path / "runtime"))
+        monkeypatch.setattr(
+            "launcher.config.get_default_install_dir",
+            lambda _name: tmp_path / "app-data" / "Test_App",
+        )
         cwd = tmp_path / "cwd"
         cwd.mkdir()
         monkeypatch.chdir(cwd)
@@ -254,7 +258,7 @@ class TestAppConfig:
             repository="git@github.com:owner/repo.git",
             version="v1.0.0",
         )
-        assert config.sources_path == tmp_path / "runtime" / "Test_App" / "testapp-v1.0.0"
+        assert config.sources_path == tmp_path / "app-data" / "Test_App" / "sources" / "testapp-v1.0.0"
 
 
 class TestLoadConfig:
@@ -628,3 +632,22 @@ class TestLoadConfig:
 
         reloaded = load_config(config_file)
         assert reloaded.reinstall_on_update is True
+
+    def test_config_save_roundtrip_ask_install_location(self, tmp_path):
+        """The developer can disable only the first-run location chooser."""
+        config_file = tmp_path / "application.yml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "name": "TestApp",
+                    "entrypoint": {"mode": "script", "script": "main.py"},
+                    "repository": "git@github.com:owner/repo.git",
+                    "ask_install_location": False,
+                }
+            )
+        )
+
+        config = load_config(config_file)
+        config.save()
+
+        assert load_config(config_file).ask_install_location is False

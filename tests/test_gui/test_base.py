@@ -16,8 +16,12 @@ class ConcreteGUI(BaseGUI):
         self.log_messages = []
         self.proxy_dialogs = []
         self.timeout_dialogs = []
+        self.install_dialogs = []
+        self.existing_dialogs = []
+        self.state_storage_dialogs = []
         self.errors = []
         self.completed = False
+        self.cancelled = []
         self._should_continue = True
 
     def _create_window(self):
@@ -39,11 +43,26 @@ class ConcreteGUI(BaseGUI):
         # Simulate user choosing to wait
         self._submit_init_timeout_response(request_id, "wait")
 
+    def _show_install_location_dialog(self, request_id, default_path):
+        self.install_dialogs.append((request_id, default_path))
+        self._submit_install_location_response(request_id, default_path)
+
+    def _show_existing_installation_dialog(self, request_id, path):
+        self.existing_dialogs.append((request_id, path))
+        self._submit_existing_installation_response(request_id, "use")
+
+    def _show_state_storage_dialog(self, request_id, message, portable_path):
+        self.state_storage_dialogs.append((request_id, message, portable_path))
+        self._submit_state_storage_response(request_id, "portable")
+
     def _show_error(self, message):
         self.errors.append(message)
 
     def _show_complete(self):
         self.completed = True
+
+    def _show_cancelled(self, message):
+        self.cancelled.append(message)
 
     def _process_events_once(self):
         return self._should_continue
@@ -138,6 +157,58 @@ class TestBaseGUI:
         assert response.type == ResponseType.INIT_TIMEOUT_RESPONSE
         assert response.request_id == "test-456"
         assert response.data["action"] == "wait"
+
+    def test_handle_install_location_event(self, gui, queues):
+        _, response_queue = queues
+        gui._handle_event(
+            WorkerEvent(
+                type=EventType.INSTALL_LOCATION_REQUIRED,
+                request_id="install-1",
+                data={"default_path": "/apps/Test"},
+            )
+        )
+
+        assert gui.install_dialogs == [("install-1", "/apps/Test")]
+        response = response_queue.get_nowait()
+        assert response.type == ResponseType.INSTALL_LOCATION_RESPONSE
+        assert response.data["path"] == "/apps/Test"
+
+    def test_handle_existing_installation_event(self, gui, queues):
+        _, response_queue = queues
+        gui._handle_event(
+            WorkerEvent(
+                type=EventType.EXISTING_INSTALLATION,
+                request_id="existing-1",
+                data={"path": "/apps/Test"},
+            )
+        )
+
+        assert gui.existing_dialogs == [("existing-1", "/apps/Test")]
+        response = response_queue.get_nowait()
+        assert response.type == ResponseType.EXISTING_INSTALLATION_RESPONSE
+        assert response.data["action"] == "use"
+
+    def test_handle_state_storage_event(self, gui, queues):
+        _, response_queue = queues
+        gui._handle_event(
+            WorkerEvent(
+                type=EventType.STATE_STORAGE_REQUIRED,
+                request_id="state-1",
+                message="State unavailable",
+                data={"portable_path": "/portable"},
+            )
+        )
+
+        assert gui.state_storage_dialogs == [("state-1", "State unavailable", "/portable")]
+        response = response_queue.get_nowait()
+        assert response.type == ResponseType.STATE_STORAGE_RESPONSE
+        assert response.data["action"] == "portable"
+
+    def test_handle_cancelled_event(self, gui):
+        gui._handle_event(WorkerEvent(type=EventType.CANCELLED, message="User cancelled"))
+
+        assert gui.cancelled == ["User cancelled"]
+        assert gui.is_completed
 
     def test_handle_error_event(self, gui, queues):
         """Test handling error events."""

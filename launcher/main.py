@@ -106,6 +106,15 @@ def run_with_delayed_gui(
                 gui_shown = True
                 gui.run()
                 break
+            if event.type in {
+                EventType.INSTALL_LOCATION_REQUIRED,
+                EventType.EXISTING_INSTALLATION,
+                EventType.STATE_STORAGE_REQUIRED,
+            }:
+                _restore_events(event_queue, pending_events)
+                gui_shown = True
+                gui.run()
+                break
         except queue.Empty:
             pass
 
@@ -316,7 +325,7 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--command", default="my-app", help="Installed command for project mode")
     parser.add_argument("--project-directory", default=None, help="Project directory for project mode")
     parser.add_argument("--arg", action="append", default=[], help="Argument passed to the app entrypoint")
-    parser.add_argument("--path", default=".", help="Install path for downloaded app sources")
+    parser.add_argument("--path", default=".", help="Default root for sources and Python environments")
     parser.add_argument("--configuration", default="pyproject.toml", help="Dependency config inside app sources")
     parser.add_argument("--icon", type=Path, default=None, help="Custom launcher icon (.icns, .ico, or .png)")
     parser.add_argument("--force", action="store_true", help="Overwrite generated files if they already exist")
@@ -357,6 +366,13 @@ def init_launcher(argv: Sequence[str] | None = None) -> int:
         config_lines.extend(f"    - {arg}" for arg in args.arg)
     if args.path != ".":
         config_lines.append(f'path: "{args.path.format(name=args.name)}"')
+    config_lines.extend(
+        [
+            "# Ask each user to confirm the runtime installation root on first launch.",
+            "# Set to false to accept the resolved path default automatically.",
+            "ask_install_location: true",
+        ]
+    )
     config_lines.extend(
         [
             "auto_update: true",

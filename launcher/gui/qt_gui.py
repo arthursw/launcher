@@ -154,6 +154,87 @@ class InitTimeoutDialog(QDialog):
         self.reject()
 
 
+class ExistingInstallationDialog(QDialog):
+    """Dialog for choosing how to handle an existing installation."""
+
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Existing Installation")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        self.action = "cancel"
+
+        layout = QVBoxLayout(self)
+        message = QLabel(f"An existing installation was found at:\n{path}")
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        buttons = QHBoxLayout()
+        use_button = QPushButton("Use Existing")
+        use_button.clicked.connect(self._use)
+        buttons.addWidget(use_button)
+        replace_button = QPushButton("Replace")
+        replace_button.clicked.connect(self._replace)
+        buttons.addWidget(replace_button)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
+
+    def _use(self):
+        self.action = "use"
+        self.accept()
+
+    def _replace(self):
+        self.action = "replace"
+        self.accept()
+
+
+class InstallLocationDialog(QDialog):
+    """Dialog with an editable exact installation root."""
+
+    def __init__(self, app_name: str, default_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Installation Location")
+        self.setModal(True)
+        self.setMinimumWidth(600)
+        self.path: Optional[str] = None
+
+        layout = QVBoxLayout(self)
+        message = QLabel(f"Choose where to install {app_name}'s sources and Python environment:")
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        path_layout = QHBoxLayout()
+        self.path_edit = QLineEdit(default_path)
+        path_layout.addWidget(self.path_edit)
+        browse = QPushButton("Browse...")
+        browse.clicked.connect(self._browse)
+        path_layout.addWidget(browse)
+        layout.addLayout(path_layout)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _browse(self):
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Choose installation directory",
+            self.path_edit.text(),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if selected:
+            self.path_edit.setText(selected)
+
+    def accept(self):
+        selected = self.path_edit.text().strip()
+        if not selected:
+            return
+        self.path = selected
+        super().accept()
+
+
 class QtGUI(BaseGUI):
     """Qt (PySide6) GUI for the launcher."""
 
@@ -275,6 +356,38 @@ class QtGUI(BaseGUI):
         dialog.exec()
         self._submit_init_timeout_response(request_id, dialog.action)
 
+    def _show_install_location_dialog(self, request_id: str, default_path: str) -> None:
+        """Show the first-run directory chooser."""
+        if not self._window:
+            return
+        dialog = InstallLocationDialog(self.app_name, default_path, self._window)
+        dialog.exec()
+        self._submit_install_location_response(request_id, dialog.path)
+
+    def _show_existing_installation_dialog(self, request_id: str, path: str) -> None:
+        """Show use/replace/cancel choices."""
+        if not self._window:
+            return
+        dialog = ExistingInstallationDialog(path, self._window)
+        dialog.exec()
+        self._submit_existing_installation_response(request_id, dialog.action)
+
+    def _show_state_storage_dialog(self, request_id: str, message: str, portable_path: str) -> None:
+        """Offer portable state storage."""
+        if not self._window:
+            return
+        result = QMessageBox.question(
+            self._window,
+            "Launcher State Storage",
+            f"{message}\n\nUse Portable Mode and store settings at:\n{portable_path}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        self._submit_state_storage_response(
+            request_id,
+            "portable" if result == QMessageBox.StandardButton.Yes else "cancel",
+        )
+
     def _show_error(self, message: str) -> None:
         """Show error message."""
         if self._progress_bar:
@@ -305,6 +418,13 @@ class QtGUI(BaseGUI):
             self._close_button.setEnabled(True)
 
         self._append_log("Launcher complete. Application is running.")
+
+    def _show_cancelled(self, message: str) -> None:
+        """Close after a user cancellation."""
+        self._append_log(f"Cancelled: {message}")
+        if self._window:
+            QMessageBox.information(self._window, "Cancelled", message)
+        self._on_close()
 
     def _process_events_once(self) -> bool:
         """Process Qt events."""

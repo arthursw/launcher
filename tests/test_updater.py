@@ -94,8 +94,8 @@ class TestCheckSourcesExist:
         mock_config.version = "v1.0.0"
 
         # Create the sources directory (app name is sanitized: "TestApp" -> "testapp")
-        sources_dir = tmp_path / "testapp-v1.0.0"
-        sources_dir.mkdir()
+        sources_dir = tmp_path / "sources" / "testapp-v1.0.0"
+        sources_dir.mkdir(parents=True)
 
         assert check_sources_exist(mock_config) is True
 
@@ -334,7 +334,7 @@ class TestDownloadAndExtractSources:
                 archive_url=_archive_url(),
             )
 
-        assert not (tmp_path / "testapp-v1.0.0").exists()
+        assert not (tmp_path / "sources" / "testapp-v1.0.0").exists()
 
     @pytest.mark.parametrize(
         "name",
@@ -361,7 +361,7 @@ class TestDownloadAndExtractSources:
             download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
         assert not (tmp_path / "evil.py").exists()
-        assert not (tmp_path / "testapp-v1.0.0").exists()
+        assert not (tmp_path / "sources" / "testapp-v1.0.0").exists()
 
     @patch('launcher.updater.requests.get')
     def test_extract_zip_internal_symlink(self, mock_get, tmp_path, mock_config):
@@ -431,7 +431,7 @@ class TestDownloadAndExtractSources:
         with pytest.raises(DownloadError, match="unsafe symlink"):
             download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
-        assert not (tmp_path / "testapp-v1.0.0").exists()
+        assert not (tmp_path / "sources" / "testapp-v1.0.0").exists()
 
     @pytest.mark.parametrize("target", ["missing.txt", "b"])
     @patch('launcher.updater.requests.get')
@@ -457,7 +457,7 @@ class TestDownloadAndExtractSources:
         with pytest.raises(DownloadError, match="symlink"):
             download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
-        assert not (tmp_path / "testapp-v1.0.0").exists()
+        assert not (tmp_path / "sources" / "testapp-v1.0.0").exists()
 
     @patch('launcher.updater.requests.get')
     def test_reject_zip_symlink_with_child_entries(self, mock_get, tmp_path, mock_config):
@@ -480,14 +480,14 @@ class TestDownloadAndExtractSources:
         with pytest.raises(DownloadError, match="symlink"):
             download_and_extract_sources(mock_config, "v1.0.0", archive_url=_archive_url())
 
-        assert not (tmp_path / "testapp-v1.0.0").exists()
+        assert not (tmp_path / "sources" / "testapp-v1.0.0").exists()
 
     @patch('launcher.updater.requests.get')
     def test_existing_target_is_not_overwritten(self, mock_get, tmp_path, mock_config):
         """Extraction never overwrites an existing source directory."""
         mock_config.path = str(tmp_path)
-        existing = tmp_path / "testapp-v1.0.0"
-        existing.mkdir()
+        existing = tmp_path / "sources" / "testapp-v1.0.0"
+        existing.mkdir(parents=True)
         (existing / "main.py").write_text("old")
         archive = _zip_bytes({"root/main.py": "new"})
         mock_response = Mock()
@@ -663,7 +663,7 @@ class TestSignedManifest:
 
         assert updated is True
         assert version == "v1.0.0"
-        assert (tmp_path / "testapp-v1.0.0" / "main.py").read_text() == "print('hello')"
+        assert (tmp_path / "sources" / "testapp-v1.0.0" / "main.py").read_text() == "print('hello')"
         assert mock_get.call_args_list[2].args[0] == "https://downloads.example.com/v1.0.0/testapp-v1.0.0.zip"
 
     @patch("launcher.updater.requests.get")
@@ -699,7 +699,7 @@ class TestSignedManifest:
 
         assert updated is True
         assert version == "v2.0.0"
-        assert (tmp_path / "testapp-v2.0.0" / "main.py").read_text() == "print('hello')"
+        assert (tmp_path / "sources" / "testapp-v2.0.0" / "main.py").read_text() == "print('hello')"
         assert mock_get.call_args_list[3].args[0] == _archive_url("v2.0.0")
         assert "/provider/archive/" not in mock_get.call_args_list[3].args[0]
 

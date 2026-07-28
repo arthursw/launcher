@@ -71,6 +71,84 @@ class InitTimeoutScreen(ModalScreen[str]):
         self.dismiss("exit")
 
 
+class InstallLocationScreen(ModalScreen[Optional[str]]):
+    """Modal screen for selecting the exact runtime root."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, app_name: str, default_path: str):
+        super().__init__()
+        self.app_name = app_name
+        self.default_path = default_path
+
+    def compose(self) -> ComposeResult:
+        with Container(id="install-dialog"):
+            yield Label(f"Choose where to install {self.app_name}", id="install-title")
+            yield Input(value=self.default_path, id="install-path")
+            with Horizontal(id="install-buttons"):
+                yield Button("Install", variant="primary", id="install")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "install":
+            self.dismiss(self.query_one("#install-path", Input).value.strip() or None)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExistingInstallationScreen(ModalScreen[str]):
+    """Modal screen for an existing-installation decision."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, path: str):
+        super().__init__()
+        self.path = path
+
+    def compose(self) -> ComposeResult:
+        with Container(id="existing-dialog"):
+            yield Label("Existing Installation", id="existing-title")
+            yield Label(f"An existing installation was found at:\n{self.path}")
+            with Horizontal(id="existing-buttons"):
+                yield Button("Use Existing", variant="primary", id="use")
+                yield Button("Replace", variant="warning", id="replace")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss("cancel")
+
+
+class StateStorageScreen(ModalScreen[str]):
+    """Modal screen for opting into portable launcher state."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, message: str, portable_path: str):
+        super().__init__()
+        self.message = message
+        self.portable_path = portable_path
+
+    def compose(self) -> ComposeResult:
+        with Container(id="state-dialog"):
+            yield Label("Launcher State Storage", id="state-title")
+            yield Label(f"{self.message}\n\nPortable state location:\n{self.portable_path}")
+            with Horizontal(id="state-buttons"):
+                yield Button("Use Portable Mode", variant="primary", id="portable")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss("cancel")
+
+
 class LauncherApp(App):
     """Textual application for the launcher."""
 
@@ -98,7 +176,7 @@ class LauncherApp(App):
         align: right middle;
     }
 
-    #proxy-dialog, #timeout-dialog {
+    #proxy-dialog, #timeout-dialog, #install-dialog, #existing-dialog, #state-dialog {
         width: 60;
         height: auto;
         padding: 1 2;
@@ -106,17 +184,18 @@ class LauncherApp(App):
         border: thick $primary;
     }
 
-    #proxy-title, #timeout-title {
+    #proxy-title, #timeout-title, #install-title, #existing-title, #state-title {
         text-style: bold;
         margin-bottom: 1;
     }
 
-    #proxy-buttons, #timeout-buttons {
+    #proxy-buttons, #timeout-buttons, #install-buttons, #existing-buttons, #state-buttons {
         margin-top: 1;
         align: center middle;
     }
 
-    #proxy-buttons Button, #timeout-buttons Button {
+    #proxy-buttons Button, #timeout-buttons Button, #install-buttons Button,
+    #existing-buttons Button, #state-buttons Button {
         margin: 0 1;
     }
     """
@@ -178,6 +257,24 @@ class LauncherApp(App):
         elif event.type == EventType.INIT_TIMEOUT:
             self._current_request_id = event.request_id
             self.push_screen(InitTimeoutScreen(event.message), self._on_timeout_result)
+        elif event.type == EventType.INSTALL_LOCATION_REQUIRED:
+            self._current_request_id = event.request_id
+            self.push_screen(
+                InstallLocationScreen(self.app_name, event.data["default_path"]),
+                self._on_install_location_result,
+            )
+        elif event.type == EventType.EXISTING_INSTALLATION:
+            self._current_request_id = event.request_id
+            self.push_screen(
+                ExistingInstallationScreen(event.data["path"]),
+                self._on_existing_installation_result,
+            )
+        elif event.type == EventType.STATE_STORAGE_REQUIRED:
+            self._current_request_id = event.request_id
+            self.push_screen(
+                StateStorageScreen(event.message, event.data["portable_path"]),
+                self._on_state_storage_result,
+            )
         elif event.type == EventType.ERROR:
             self.query_one("#progress-label", Label).update("Error occurred")
             self.query_one("#log", RichLog).write(f"[red]ERROR: {event.message}[/red]")
@@ -189,6 +286,9 @@ class LauncherApp(App):
             progress_bar.update(total=100, progress=100)
             self.query_one("#log", RichLog).write("[green]Launcher complete. Application is running.[/green]")
             self.query_one("#close", Button).disabled = False
+        elif event.type == EventType.CANCELLED:
+            self.query_one("#log", RichLog).write(f"Cancelled: {event.message}")
+            self.exit()
 
     def _on_proxy_result(self, result: tuple[Optional[str], Optional[str], Optional[str], bool] | None) -> None:
         """Handle proxy dialog result."""
@@ -218,6 +318,42 @@ class LauncherApp(App):
             data={"action": action or "exit"},
         )
         self.response_queue.put(response)
+
+    def _on_install_location_result(self, path: Optional[str]) -> None:
+        """Handle installation-root selection."""
+        from ..worker import GUIResponse, ResponseType
+
+        self.response_queue.put(
+            GUIResponse(
+                type=ResponseType.INSTALL_LOCATION_RESPONSE,
+                request_id=self._current_request_id or "",
+                data={"path": path},
+            )
+        )
+
+    def _on_existing_installation_result(self, action: str | None) -> None:
+        """Handle existing-installation selection."""
+        from ..worker import GUIResponse, ResponseType
+
+        self.response_queue.put(
+            GUIResponse(
+                type=ResponseType.EXISTING_INSTALLATION_RESPONSE,
+                request_id=self._current_request_id or "",
+                data={"action": action or "cancel"},
+            )
+        )
+
+    def _on_state_storage_result(self, action: str | None) -> None:
+        """Handle portable-state selection."""
+        from ..worker import GUIResponse, ResponseType
+
+        self.response_queue.put(
+            GUIResponse(
+                type=ResponseType.STATE_STORAGE_RESPONSE,
+                request_id=self._current_request_id or "",
+                data={"action": action or "cancel"},
+            )
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button press."""
@@ -266,11 +402,27 @@ class TextualGUI(BaseGUI):
         """Not used - handled internally by LauncherApp."""
         pass
 
+    def _show_install_location_dialog(self, request_id: str, default_path: str) -> None:
+        """Not used - handled internally by LauncherApp."""
+        pass
+
+    def _show_existing_installation_dialog(self, request_id: str, path: str) -> None:
+        """Not used - handled internally by LauncherApp."""
+        pass
+
+    def _show_state_storage_dialog(self, request_id: str, message: str, portable_path: str) -> None:
+        """Not used - handled internally by LauncherApp."""
+        pass
+
     def _show_error(self, message: str) -> None:
         """Not used - handled internally by LauncherApp."""
         pass
 
     def _show_complete(self) -> None:
+        """Not used - handled internally by LauncherApp."""
+        pass
+
+    def _show_cancelled(self, message: str) -> None:
         """Not used - handled internally by LauncherApp."""
         pass
 

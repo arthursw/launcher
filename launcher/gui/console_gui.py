@@ -103,6 +103,44 @@ class ConsoleGUI(BaseGUI):
         self._submit_init_timeout_response(request_id, action)
         print("-" * 40 + "\n")
 
+    def _show_install_location_dialog(self, request_id: str, default_path: str) -> None:
+        """Prompt for the first-run installation root."""
+        print("\n" + "-" * 40)
+        print("Installation Location")
+        print("-" * 40)
+        try:
+            selected = input(f"Install application files in [{default_path}]: ").strip()
+            self._submit_install_location_response(request_id, selected or default_path)
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled")
+            self._submit_install_location_response(request_id, None)
+
+    def _show_existing_installation_dialog(self, request_id: str, path: str) -> None:
+        """Prompt for an existing-installation action."""
+        print(f"\nAn existing installation was found at:\n  {path}")
+        print("  1. Use existing")
+        print("  2. Replace")
+        print("  3. Cancel")
+        try:
+            choice = input("Enter choice (1/2/3): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = "3"
+        action = {"1": "use", "2": "replace"}.get(choice, "cancel")
+        self._submit_existing_installation_response(request_id, action)
+
+    def _show_state_storage_dialog(self, request_id: str, message: str, portable_path: str) -> None:
+        """Offer explicit portable state storage."""
+        print(f"\n{message}")
+        print(f"Portable state can be stored at:\n  {portable_path}")
+        try:
+            answer = input("Use Portable Mode? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        self._submit_state_storage_response(
+            request_id,
+            "portable" if answer in {"y", "yes"} else "cancel",
+        )
+
     def _show_error(self, message: str) -> None:
         """Display error message."""
         print(f"\r{' ' * 80}\r", end="")
@@ -117,6 +155,11 @@ class ConsoleGUI(BaseGUI):
         print(f"\n{'=' * 60}")
         print("  Launcher complete. Application is running.")
         print(f"{'=' * 60}\n")
+        self._running = False
+
+    def _show_cancelled(self, message: str) -> None:
+        """Report cancellation without treating it as an error."""
+        print(f"\nCancelled: {message}\n")
         self._running = False
 
     def _process_events_once(self) -> bool:

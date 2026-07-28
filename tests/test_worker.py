@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from launcher.worker import (
+    LauncherCancelled,
     LauncherWorker,
     WorkerEvent,
     GUIResponse,
@@ -12,9 +13,20 @@ from launcher.worker import (
     ResponseType,
     create_queues,
 )
-from launcher.config import ProxySettings
-from launcher.state import LauncherState
+from launcher.config import AppConfig, EntryPointConfig, ProxySettings
+from launcher.installation import initialize_installation_root
+from launcher.state import LauncherState, StateStorageError
 from launcher.updater import HTTPStatusError, UpdaterError
+
+
+def prepare_installation(tmp_path):
+    """Create and record the unified runtime root used by worker tests."""
+    root = tmp_path / "apps"
+    initialize_installation_root(root, "TestApp")
+    state = LauncherState.for_app("TestApp")
+    state.installation_root = str(root)
+    state.save()
+    return root
 
 
 @pytest.fixture
@@ -31,6 +43,7 @@ def mock_config_file(tmp_path):
         "name": "TestApp",
         "entrypoint": {"mode": "script", "script": "main.py"},
         "path": str(tmp_path / "apps"),
+        "ask_install_location": False,
         "repository": "git@github.com:owner/repo.git",
         "auto_update": False,
         "version": "testapp-v1.0.0",
@@ -39,7 +52,8 @@ def mock_config_file(tmp_path):
     config_file.write_text(yaml.dump(config_data))
 
     # Create the sources directory with main.py
-    sources_dir = tmp_path / "apps" / "testapp-v1.0.0"
+    prepare_installation(tmp_path)
+    sources_dir = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
     sources_dir.mkdir(parents=True)
     (sources_dir / "main.py").write_text("print('hello')")
     (sources_dir / "pyproject.toml").write_text("[project]\nname = 'test'\n")
@@ -286,6 +300,120 @@ class TestLauncherWorker:
         assert "Reinstalling recreates the local environment" in event.message
         assert "will not fix a broken release" in event.message
 
+    def test_first_run_records_selected_unified_installation_root(self, tmp_path, queues):
+        """First run asks once and configures sources below the selected root."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(tmp_path / "application.yml", event_queue, response_queue)
+        worker._config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
+            repository="https://github.com/example/app.git",
+        )
+        worker._state = LauncherState.load("TestApp", tmp_path / "state.yml")
+        selected = tmp_path / "selected"
+        worker._wait_for_response = MagicMock(
+            return_value=GUIResponse(
+                type=ResponseType.INSTALL_LOCATION_RESPONSE,
+                request_id="ignored",
+                data={"path": str(selected)},
+            )
+        )
+
+        root = worker._configure_installation()
+
+        assert root == selected
+        assert worker._state.installation_root == str(selected)
+        assert worker._config.sources_path == selected / "sources"
+        assert (selected / "wetlands").is_dir()
+        assert event_queue.get_nowait().type == EventType.INSTALL_LOCATION_REQUIRED
+
+    def test_existing_installation_can_be_replaced_without_deleting_unrelated_files(self, tmp_path, queues):
+        """Replace resets owned runtime data and installation fingerprints."""
+        event_queue, response_queue = queues
+        root = tmp_path / "existing"
+        initialize_installation_root(root, "TestApp")
+        (root / "sources" / "old.py").write_text("old")
+        (root / "keep.txt").write_text("keep")
+        worker = LauncherWorker(tmp_path / "application.yml", event_queue, response_queue)
+        worker._config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
+            repository="https://github.com/example/app.git",
+            path=str(root),
+            ask_install_location=False,
+        )
+        worker._state = LauncherState.load("TestApp", tmp_path / "state.yml")
+        worker._state.version = "v1"
+        worker._state.dependency_hash = "hash"
+        worker._wait_for_response = MagicMock(
+            return_value=GUIResponse(
+                type=ResponseType.EXISTING_INSTALLATION_RESPONSE,
+                request_id="ignored",
+                data={"action": "replace"},
+            )
+        )
+
+        worker._configure_installation()
+
+        assert not (root / "sources" / "old.py").exists()
+        assert (root / "keep.txt").read_text() == "keep"
+        assert worker._state.version is None
+        assert worker._state.dependency_hash is None
+        assert event_queue.get_nowait().type == EventType.EXISTING_INSTALLATION
+
+    def test_first_run_cancel_does_not_record_installation_root(self, tmp_path, queues):
+        """Cancelling the location chooser leaves state unchanged."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(tmp_path / "application.yml", event_queue, response_queue)
+        worker._config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
+            repository="https://github.com/example/app.git",
+        )
+        worker._state = LauncherState.load("TestApp", tmp_path / "state.yml")
+        worker._wait_for_response = MagicMock(return_value=None)
+
+        with pytest.raises(LauncherCancelled):
+            worker._configure_installation()
+
+        assert worker._state.installation_root is None
+        assert not worker._state.state_path.exists()
+
+    def test_unwritable_os_state_can_use_explicit_portable_mode(self, tmp_path, queues, monkeypatch):
+        """Portable state is selected only after an explicit user response."""
+        event_queue, response_queue = queues
+        portable = tmp_path / "portable"
+        portable_state = LauncherState.load("TestApp", portable / "launcher-state.yml")
+        worker = LauncherWorker(tmp_path / "application.yml", event_queue, response_queue)
+        worker._config = AppConfig(
+            name="TestApp",
+            entrypoint=EntryPointConfig(mode="script", script="main.py"),
+            repository="https://github.com/example/app.git",
+        )
+        unavailable = StateStorageError(
+            "OS state is read only",
+            state_dir=tmp_path / "state",
+            portable_dir=portable,
+            portable_available=True,
+        )
+        for_app = MagicMock(side_effect=[unavailable, portable_state])
+        monkeypatch.setattr("launcher.worker.LauncherState.for_app", for_app)
+        monkeypatch.setattr("launcher.worker.enable_portable_state", lambda _name: portable)
+        worker._wait_for_response = MagicMock(
+            return_value=GUIResponse(
+                type=ResponseType.STATE_STORAGE_RESPONSE,
+                request_id="ignored",
+                data={"action": "portable"},
+            )
+        )
+
+        state = worker._load_state()
+
+        assert state is portable_state
+        event = event_queue.get_nowait()
+        assert event.type == EventType.STATE_STORAGE_REQUIRED
+        assert event.data["portable_path"] == str(portable)
+
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')
     def test_worker_reports_updater_errors_as_update_errors(
@@ -359,6 +487,9 @@ class TestLauncherWorker:
         assert "Application process started with PID 12345" in logs
         assert "No init_message configured; launcher will exit and leave the application running." in logs
         assert complete is True
+        mock_env_manager_class.assert_called_once_with(
+            wetlands_path=mock_config_file.parent / "apps" / "wetlands"
+        )
         mock_runner.ensure_still_running.assert_called_once()
 
     @patch('launcher.worker.LauncherEnvironmentManager')
@@ -417,12 +548,14 @@ class TestLauncherWorker:
             "name": "TestApp",
             "entrypoint": {"mode": "project", "command": "test-app-gui"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
             "configuration": "backend/pyproject.toml",
         }))
-        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        prepare_installation(tmp_path)
+        project = tmp_path / "apps" / "sources" / "testapp-v1.0.0" / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
         mock_update_sources.return_value = (False, "testapp-v1.0.0")
@@ -469,12 +602,14 @@ class TestLauncherWorker:
             "name": "TestApp",
             "entrypoint": {"mode": "project", "command": "test-app-gui"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
             "configuration": "backend/pyproject.toml",
         }))
-        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        prepare_installation(tmp_path)
+        project = tmp_path / "apps" / "sources" / "testapp-v1.0.0" / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
         config = load_config(config_file)
@@ -523,12 +658,14 @@ class TestLauncherWorker:
             "name": "TestApp",
             "entrypoint": {"mode": "project", "command": "test-app-gui"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
             "configuration": "backend/pyproject.toml",
         }))
-        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        prepare_installation(tmp_path)
+        project = tmp_path / "apps" / "sources" / "testapp-v1.0.0" / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
         config = load_config(config_file)
@@ -575,12 +712,14 @@ class TestLauncherWorker:
             "name": "TestApp",
             "entrypoint": {"mode": "project", "command": "test-app-gui"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
             "configuration": "backend/pyproject.toml",
         }))
-        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        prepare_installation(tmp_path)
+        project = tmp_path / "apps" / "sources" / "testapp-v1.0.0" / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
         mock_update_sources.return_value = (False, "testapp-v1.0.0")
@@ -625,12 +764,14 @@ class TestLauncherWorker:
             "name": "TestApp",
             "entrypoint": {"mode": "project", "command": "test-app-gui"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
             "configuration": "backend/pyproject.toml",
         }))
-        project = tmp_path / "apps" / "testapp-v1.0.0" / "backend"
+        prepare_installation(tmp_path)
+        project = tmp_path / "apps" / "sources" / "testapp-v1.0.0" / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname = 'test'\n")
         state = LauncherState.for_app("TestApp")
@@ -667,6 +808,7 @@ class TestReinstallOnUpdate:
             "name": "TestApp",
             "entrypoint": {"mode": "script", "script": "main.py"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
@@ -677,7 +819,8 @@ class TestReinstallOnUpdate:
         config_file.write_text(yaml.dump(config_data))
 
         # Create the sources directory with main.py and install.py
-        sources_dir = tmp_path / "apps" / "testapp-v1.0.0"
+        prepare_installation(tmp_path)
+        sources_dir = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         sources_dir.mkdir(parents=True)
         (sources_dir / "main.py").write_text("print('hello')")
         (sources_dir / "install.py").write_text("print('install')")
@@ -785,6 +928,7 @@ class TestReinstallOnUpdate:
             "name": "TestApp",
             "entrypoint": {"mode": "script", "script": "main.py"},
             "path": str(tmp_path / "apps"),
+            "ask_install_location": False,
             "repository": "git@github.com:owner/repo.git",
             "auto_update": False,
             "version": "testapp-v1.0.0",
@@ -795,7 +939,8 @@ class TestReinstallOnUpdate:
         config_file.write_text(yaml.dump(config_data))
 
         # Create the sources directory
-        sources_dir = tmp_path / "apps" / "testapp-v1.0.0"
+        prepare_installation(tmp_path)
+        sources_dir = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         sources_dir.mkdir(parents=True)
         (sources_dir / "main.py").write_text("print('hello')")
         (sources_dir / "install.py").write_text("print('install')")

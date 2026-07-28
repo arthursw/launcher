@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -12,9 +14,31 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import yaml
 
 from .config import ProxySettings
-from .paths import get_runtime_data_dir
+from .paths import (
+    RUNTIME_DATA_DIR_ENV_VAR,
+    get_default_state_dir,
+    get_portable_state_dir,
+    sanitize_state_name,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class StateStorageError(Exception):
+    """Raised when launcher state cannot be stored safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        state_dir: Optional[Path] = None,
+        portable_dir: Optional[Path] = None,
+        portable_available: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.state_dir = state_dir
+        self.portable_dir = portable_dir
+        self.portable_available = portable_available
 
 
 @dataclass
@@ -34,6 +58,7 @@ class LauncherState:
 
     app_name: str
     state_path: Path
+    installation_root: Optional[str] = None
     version: Optional[str] = None
     dependency_hash: Optional[str] = None
     project_install_fingerprint: Optional[str] = None
@@ -45,7 +70,7 @@ class LauncherState:
     @classmethod
     def for_app(cls, app_name: str, state_dir: Optional[Path] = None) -> "LauncherState":
         """Load state for an application."""
-        root = state_dir or get_runtime_data_dir(app_name)
+        root = state_dir or resolve_state_dir(app_name)
         path = root / "launcher-state.yml"
         return cls.load(app_name, path)
 
@@ -63,6 +88,7 @@ class LauncherState:
         return cls(
             app_name=app_name,
             state_path=state_path,
+            installation_root=data.get("installation_root"),
             version=data.get("version"),
             dependency_hash=data.get("dependency_hash"),
             project_install_fingerprint=data.get("project_install_fingerprint"),
@@ -75,6 +101,8 @@ class LauncherState:
         """Write state to disk."""
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {}
+        if self.installation_root:
+            data["installation_root"] = self.installation_root
         if self.version:
             data["version"] = self.version
         if self.dependency_hash:
@@ -92,8 +120,23 @@ class LauncherState:
         if proxy:
             data["proxy"] = proxy
 
-        with open(self.state_path, "w") as f:
-            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        temporary = self.state_path.parent / f".{self.state_path.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False))
+            try:
+                temporary.chmod(0o600)
+            except OSError:
+                pass
+            temporary.replace(self.state_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def clear_installation_fingerprints(self) -> None:
+        """Reset runtime values that must be rebuilt after replacement."""
+        self.version = None
+        self.dependency_hash = None
+        self.project_install_fingerprint = None
 
     def proxy_settings(self) -> Optional[ProxySettings]:
         """Return persisted proxy settings, loading passwords from keychain if available."""
@@ -127,6 +170,78 @@ class LauncherState:
         self.proxy_ssl_cert_file = proxy.ssl_cert_file
         self.session_proxy_settings = proxy
         self.save()
+
+
+def resolve_state_dir(app_name: str) -> Path:
+    """Find a writable persistent state directory without silently going portable."""
+    override = os.environ.get(RUNTIME_DATA_DIR_ENV_VAR)
+    if override:
+        state_dir = Path(override).expanduser() / sanitize_state_name(app_name)
+        _require_writable_state_dir(state_dir)
+        return state_dir
+
+    portable_dir = get_portable_state_dir(app_name)
+    if (portable_dir / "launcher-state.yml").is_file():
+        _require_writable_state_dir(portable_dir)
+        return portable_dir
+
+    state_dir = get_default_state_dir(app_name)
+    try:
+        _require_writable_state_dir(state_dir)
+        return state_dir
+    except StateStorageError as exc:
+        portable_available = _state_dir_is_writable(portable_dir)
+        raise StateStorageError(
+            f"Launcher cannot write its state in {state_dir}: {exc}",
+            state_dir=state_dir,
+            portable_dir=portable_dir,
+            portable_available=portable_available,
+        ) from exc
+
+
+def enable_portable_state(app_name: str) -> Path:
+    """Create and return the explicit portable state sidecar."""
+    portable_dir = get_portable_state_dir(app_name)
+    _require_writable_state_dir(portable_dir)
+    return portable_dir
+
+
+def _require_writable_state_dir(path: Path) -> None:
+    probe = path / f".launcher-write-test-{uuid.uuid4().hex}"
+    replacement = path / f".launcher-write-test-{uuid.uuid4().hex}"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
+        probe.write_text("state")
+        probe.replace(replacement)
+        replacement.unlink()
+    except OSError as exc:
+        raise StateStorageError(str(exc), state_dir=path) from exc
+    finally:
+        for temporary in (probe, replacement):
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+
+
+def _state_dir_is_writable(path: Path) -> bool:
+    existed = path.exists()
+    try:
+        _require_writable_state_dir(path)
+        return True
+    except StateStorageError:
+        return False
+    finally:
+        if not existed and path.exists():
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
 
 def _credential_from_dict(data: Optional[dict[str, Any]]) -> Optional[ProxyCredential]:

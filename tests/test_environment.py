@@ -91,7 +91,7 @@ class TestLauncherEnvironmentManager:
         mock_env = MagicMock()
         mock_instance.create.return_value = mock_env
 
-        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
         pyproject = project / "pyproject.toml"
@@ -137,7 +137,7 @@ class TestLauncherEnvironmentManager:
     ):
         """Wetlands local dependencies need the Python distribution name."""
         mock_env_manager_class.return_value = MagicMock()
-        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[tool.pixi.project]\nname = 'pixi-env'\n")
@@ -163,7 +163,7 @@ class TestLauncherEnvironmentManager:
     ):
         """Missing local path dependencies should fail before Pixi reports a solver error."""
         mock_env_manager_class.return_value = MagicMock()
-        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
         missing = sources / "packages" / "my-core"
@@ -204,7 +204,7 @@ class TestLauncherEnvironmentManager:
     ):
         """tool.uv.sources local paths should also be validated before environment creation."""
         mock_env_manager_class.return_value = MagicMock()
-        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
         missing = sources / "packages" / "my-core"
@@ -246,7 +246,7 @@ class TestLauncherEnvironmentManager:
         mock_env_manager_class.return_value = mock_instance
         mock_instance._parse_dependencies_from_config.return_value = {"pip": ["requests"]}
         mock_instance.create.side_effect = Exception("failed to solve the pypi requirements")
-        sources = tmp_path / "apps" / "myapp-v1.2.3"
+        sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
         pyproject = project / "pyproject.toml"
@@ -457,7 +457,7 @@ class TestDependencyHash:
     """Tests for environment dependency hashing."""
 
     def test_hash_changes_when_dependency_file_changes(self, tmp_path):
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
@@ -475,7 +475,7 @@ class TestDependencyHash:
         assert compute_dependency_hash(config) != first
 
     def test_hash_includes_lock_file_and_install_script(self, tmp_path):
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
@@ -499,7 +499,7 @@ class TestDependencyHash:
         assert compute_dependency_hash(config) != second
 
     def test_hash_changes_when_extras_change(self, tmp_path):
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         sources.mkdir(parents=True)
         config = AppConfig(
             name="TestApp",
@@ -518,7 +518,7 @@ class TestDependencyHash:
         assert compute_dependency_hash(config) != first
 
     def test_project_install_fingerprint_changes_when_version_changes(self, tmp_path):
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         project = sources / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname='a'\n")
@@ -536,7 +536,7 @@ class TestDependencyHash:
         assert compute_project_install_fingerprint(config, "v1.0.1") != first
 
     def test_project_install_fingerprint_changes_when_project_metadata_changes(self, tmp_path):
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         project = sources / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname='a'\n")
@@ -555,7 +555,7 @@ class TestDependencyHash:
         assert compute_project_install_fingerprint(config, "v1.0.0") != first
 
     def test_project_install_fingerprint_changes_when_project_entrypoint_changes(self, tmp_path):
-        sources = tmp_path / "apps" / "testapp-v1.0.0"
+        sources = tmp_path / "apps" / "sources" / "testapp-v1.0.0"
         project = sources / "backend"
         project.mkdir(parents=True)
         (project / "pyproject.toml").write_text("[project]\nname='a'\n")

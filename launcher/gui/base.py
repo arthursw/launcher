@@ -88,6 +88,21 @@ class BaseGUI(ABC):
         pass
 
     @abstractmethod
+    def _show_install_location_dialog(self, request_id: str, default_path: str) -> None:
+        """Ask for the exact first-run runtime installation root."""
+        pass
+
+    @abstractmethod
+    def _show_existing_installation_dialog(self, request_id: str, path: str) -> None:
+        """Ask whether to use, replace, or cancel an existing installation."""
+        pass
+
+    @abstractmethod
+    def _show_state_storage_dialog(self, request_id: str, message: str, portable_path: str) -> None:
+        """Offer explicit portable state storage after OS state storage fails."""
+        pass
+
+    @abstractmethod
     def _show_error(self, message: str) -> None:
         """Display an error message.
 
@@ -99,6 +114,11 @@ class BaseGUI(ABC):
     @abstractmethod
     def _show_complete(self) -> None:
         """Handle completion of the launcher process."""
+        pass
+
+    @abstractmethod
+    def _show_cancelled(self, message: str) -> None:
+        """Handle user cancellation."""
         pass
 
     @abstractmethod
@@ -170,6 +190,36 @@ class BaseGUI(ABC):
         )
         self.response_queue.put(response)
 
+    def _submit_install_location_response(self, request_id: str, path: Optional[str]) -> None:
+        """Submit a selected installation root, or cancel with ``None``."""
+        self.response_queue.put(
+            GUIResponse(
+                type=ResponseType.INSTALL_LOCATION_RESPONSE,
+                request_id=request_id,
+                data={"path": path},
+            )
+        )
+
+    def _submit_existing_installation_response(self, request_id: str, action: str) -> None:
+        """Submit ``use``, ``replace``, or ``cancel`` for an existing install."""
+        self.response_queue.put(
+            GUIResponse(
+                type=ResponseType.EXISTING_INSTALLATION_RESPONSE,
+                request_id=request_id,
+                data={"action": action},
+            )
+        )
+
+    def _submit_state_storage_response(self, request_id: str, action: str) -> None:
+        """Submit ``portable`` or ``cancel`` for state storage."""
+        self.response_queue.put(
+            GUIResponse(
+                type=ResponseType.STATE_STORAGE_RESPONSE,
+                request_id=request_id,
+                data={"action": action},
+            )
+        )
+
     def _check_events(self) -> None:
         """Check for and handle events from the worker.
 
@@ -196,12 +246,25 @@ class BaseGUI(ABC):
             self._show_proxy_dialog(event.request_id)
         elif event.type == EventType.INIT_TIMEOUT:
             self._show_init_timeout_dialog(event.request_id, event.message)
+        elif event.type == EventType.INSTALL_LOCATION_REQUIRED:
+            self._show_install_location_dialog(event.request_id, event.data["default_path"])
+        elif event.type == EventType.EXISTING_INSTALLATION:
+            self._show_existing_installation_dialog(event.request_id, event.data["path"])
+        elif event.type == EventType.STATE_STORAGE_REQUIRED:
+            self._show_state_storage_dialog(
+                event.request_id,
+                event.message,
+                event.data["portable_path"],
+            )
         elif event.type == EventType.ERROR:
             self._error_message = event.message
             self._show_error(event.message)
         elif event.type == EventType.COMPLETE:
             self._completed = True
             self._show_complete()
+        elif event.type == EventType.CANCELLED:
+            self._completed = True
+            self._show_cancelled(event.message)
 
     def run(self) -> None:
         """Run the GUI main loop.

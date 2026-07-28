@@ -7,7 +7,7 @@ from typing import Any, Optional, Union
 
 import yaml
 
-from .paths import get_runtime_data_dir
+from .paths import get_default_install_dir
 from .repository import default_release_asset_url_templates
 from .release_version import ReleaseVersionError, validate_release_config
 
@@ -151,6 +151,7 @@ class AppConfig:
     name: str
     entrypoint: EntryPointConfig
     path: str = "."
+    ask_install_location: bool = True
     repository: Optional[str] = None
     gitlab_project_id: Optional[str] = None
     api: Optional[str] = None
@@ -172,6 +173,7 @@ class AppConfig:
 
     # Internal: path to the config file for saving updates
     _config_path: Optional[Path] = field(default=None, repr=False)
+    _installation_root: Optional[Path] = field(default=None, repr=False)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -187,6 +189,8 @@ class AppConfig:
             raise ValueError("'extras' must be a list of strings")
         if not isinstance(self.path, str):
             raise ValueError("'path' must be a string")
+        if not isinstance(self.ask_install_location, bool):
+            raise ValueError("'ask_install_location' must be a boolean")
         if self.working_directory is not None and not isinstance(self.working_directory, str):
             raise ValueError("'working_directory' must be a string")
         if self.pythonpath is not None and (
@@ -223,10 +227,21 @@ class AppConfig:
         return root
 
     def _sources_root(self) -> Path:
+        return self.installation_root / "sources"
+
+    @property
+    def installation_root(self) -> Path:
+        """Return the selected or configured unified runtime root."""
+        if self._installation_root is not None:
+            return self._installation_root
         root = Path(self.path).expanduser()
         if root.is_absolute():
-            return root
-        return get_runtime_data_dir(self.name) / root
+            return root.resolve()
+        return (get_default_install_dir(self.name) / root).resolve()
+
+    def use_installation_root(self, root: Path) -> None:
+        """Use a resolved runtime installation root for source paths."""
+        self._installation_root = root.expanduser().resolve()
 
     @property
     def sources_path(self) -> Path:
@@ -323,6 +338,7 @@ class AppConfig:
         }
         if self.path != ".":
             data["path"] = self.path
+        data["ask_install_location"] = self.ask_install_location
 
         # Add optional fields if set
         if self.repository:
@@ -507,6 +523,7 @@ def load_config(config_path: Path) -> AppConfig:
         name=data["name"],
         entrypoint=_load_entrypoint_config(data["entrypoint"]),
         path=data.get("path") or ".",
+        ask_install_location=data.get("ask_install_location", True),
         repository=data.get("repository"),
         gitlab_project_id=data.get("gitlab_project_id"),
         api=data.get("api"),

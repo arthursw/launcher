@@ -245,6 +245,41 @@ def test_delayed_gui_opens_for_early_error():
     assert calls == ["gui"]
 
 
+def test_delayed_gui_opens_immediately_for_installation_location_request():
+    """First-run interaction must not wait for the progress-window timeout."""
+    event_queue = queue.Queue()
+    calls = []
+
+    class FakeWorker:
+        def __init__(self):
+            self._running = True
+
+        def start(self):
+            event_queue.put(
+                WorkerEvent(
+                    type=EventType.INSTALL_LOCATION_REQUIRED,
+                    request_id="install",
+                    data={"default_path": "/apps/Test"},
+                )
+            )
+
+        def is_running(self):
+            return self._running
+
+    class FakeGui:
+        def run(self):
+            calls.append("gui")
+
+    package_main.run_with_delayed_gui(
+        cast(Any, FakeWorker()),
+        cast(Any, FakeGui()),
+        gui_timeout=30,
+        event_queue=event_queue,
+    )
+
+    assert calls == ["gui"]
+
+
 def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     """`launcher init` should create app-owned launcher packaging files."""
     monkeypatch.chdir(tmp_path)
@@ -277,6 +312,7 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     assert "  mode: script" in text
     assert "  script: src/myapp/__main__.py" in text
     assert "\npath:" not in text
+    assert "ask_install_location: true" in text
     assert "# Replace this with the public key printed by: launcher release keygen" in text
     assert "public_key: \"<base64-ed25519-public-key>\"" in text
     assert "# With repository set, Launcher infers these GitLab/GitHub release asset URLs." in text

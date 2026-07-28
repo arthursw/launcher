@@ -16,10 +16,18 @@ from .environment import (
     compute_dependency_hash,
     compute_project_install_fingerprint,
 )
+from .installation import (
+    InstallationError,
+    InstallationRootKind,
+    default_installation_root,
+    initialize_installation_root,
+    inspect_installation_root,
+    replace_installation_root,
+)
 from .proxy import discover_proxy_settings
 from .runner import ScriptRunner, InitTimeoutError, RunnerError
 from .updater import HTTPStatusError, NetworkError, DownloadError, UpdaterError, update_sources
-from .state import LauncherState
+from .state import LauncherState, StateStorageError, enable_portable_state
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +38,11 @@ class EventType(Enum):
     PROGRESS = "progress"
     PROXY_REQUIRED = "proxy_required"
     INIT_TIMEOUT = "init_timeout"
+    INSTALL_LOCATION_REQUIRED = "install_location_required"
+    EXISTING_INSTALLATION = "existing_installation"
+    STATE_STORAGE_REQUIRED = "state_storage_required"
     COMPLETE = "complete"
+    CANCELLED = "cancelled"
     ERROR = "error"
 
 
@@ -38,6 +50,13 @@ class ResponseType(Enum):
     """Types of responses sent from GUI to worker."""
     PROXY_SETTINGS = "proxy_settings"
     INIT_TIMEOUT_RESPONSE = "init_timeout_response"
+    INSTALL_LOCATION_RESPONSE = "install_location_response"
+    EXISTING_INSTALLATION_RESPONSE = "existing_installation_response"
+    STATE_STORAGE_RESPONSE = "state_storage_response"
+
+
+class LauncherCancelled(Exception):
+    """Raised when the user cancels an interactive launcher decision."""
 
 
 @dataclass
@@ -173,6 +192,107 @@ class LauncherWorker:
 
         return "exit"
 
+    def _load_state(self) -> LauncherState:
+        """Load writable state, offering explicit portable storage if necessary."""
+        assert self._config is not None, "Config not loaded"
+        try:
+            return LauncherState.for_app(self._config.name)
+        except StateStorageError as exc:
+            if not exc.portable_dir or not exc.portable_available:
+                raise
+            request_id = str(uuid.uuid4())
+            self._send_event(
+                WorkerEvent(
+                    type=EventType.STATE_STORAGE_REQUIRED,
+                    request_id=request_id,
+                    message=str(exc),
+                    data={"portable_path": str(exc.portable_dir)},
+                )
+            )
+            response = self._wait_for_response(request_id, ResponseType.STATE_STORAGE_RESPONSE)
+            if not response or response.data.get("action") != "portable":
+                raise LauncherCancelled("State storage selection cancelled")
+            portable_dir = enable_portable_state(self._config.name)
+            return LauncherState.for_app(self._config.name, state_dir=portable_dir)
+
+    def _configure_installation(self) -> Path:
+        """Resolve, validate, and persist the app runtime installation root."""
+        assert self._config is not None, "Config not loaded"
+        assert self._state is not None, "State not loaded"
+
+        if self._state.installation_root:
+            root = Path(self._state.installation_root).expanduser().resolve()
+            inspection = inspect_installation_root(root, self._config.name)
+            if inspection.kind == InstallationRootKind.CONFLICT:
+                raise InstallationError(inspection.message)
+            if inspection.kind == InstallationRootKind.NEW:
+                initialize_installation_root(root, self._config.name)
+            self._config.use_installation_root(root)
+            return root
+
+        root = default_installation_root(self._config)
+        if self._config.ask_install_location:
+            request_id = str(uuid.uuid4())
+            self._send_event(
+                WorkerEvent(
+                    type=EventType.INSTALL_LOCATION_REQUIRED,
+                    request_id=request_id,
+                    message=f"Choose where to install {self._config.name}.",
+                    data={"default_path": str(root)},
+                )
+            )
+            response = self._wait_for_response(request_id, ResponseType.INSTALL_LOCATION_RESPONSE)
+            selected = response.data.get("path") if response else None
+            if not selected:
+                raise LauncherCancelled("Installation destination selection cancelled")
+            root = Path(selected).expanduser().resolve()
+
+        inspection = inspect_installation_root(root, self._config.name)
+        if inspection.kind == InstallationRootKind.CONFLICT:
+            raise InstallationError(inspection.message)
+        if inspection.kind == InstallationRootKind.EXISTING:
+            request_id = str(uuid.uuid4())
+            self._send_event(
+                WorkerEvent(
+                    type=EventType.EXISTING_INSTALLATION,
+                    request_id=request_id,
+                    message=f"An existing {self._config.name} installation was found at {root}.",
+                    data={"path": str(root)},
+                )
+            )
+            response = self._wait_for_response(request_id, ResponseType.EXISTING_INSTALLATION_RESPONSE)
+            action = response.data.get("action", "cancel") if response else "cancel"
+            if action == "cancel":
+                raise LauncherCancelled("Existing installation selection cancelled")
+            if action == "replace":
+                replace_installation_root(root, self._config.name)
+                self._state.clear_installation_fingerprints()
+            elif action != "use":
+                raise LauncherCancelled("Existing installation selection cancelled")
+        else:
+            initialize_installation_root(root, self._config.name)
+
+        self._state.installation_root = str(root)
+        self._state.save()
+        self._config.use_installation_root(root)
+        return root
+
+    def _wait_for_response(
+        self,
+        request_id: str,
+        response_type: ResponseType,
+    ) -> Optional[GUIResponse]:
+        """Wait for the matching response to an interactive request."""
+        try:
+            response = self.response_queue.get(timeout=300)
+        except queue.Empty:
+            logger.warning("%s request timed out", response_type.value)
+            return None
+        if response.type == response_type and response.request_id == request_id:
+            return response
+        logger.warning("Ignoring mismatched response for request %s", request_id)
+        return None
+
     def _get_proxy_settings(self) -> Optional[ProxySettings]:
         """Get proxy settings from config, discovery, or user.
 
@@ -258,14 +378,18 @@ class LauncherWorker:
             # Load configuration
             self._log("Loading configuration...")
             self._config = load_config(self.config_path)
-            self._state = LauncherState.for_app(self._config.name)
+            self._state = self._load_state()
+            installation_root = self._configure_installation()
             if self._config.auto_update and self._state.version:
                 self._config.version = self._state.version
             self._log(f"Loaded config for: {self._config.name}")
+            self._log(f"Using installation root: {installation_root}")
 
             # Initialize environment manager
             self._log("Initializing environment manager...")
-            self._env_manager = LauncherEnvironmentManager()
+            self._env_manager = LauncherEnvironmentManager(
+                wetlands_path=installation_root / "wetlands"
+            )
 
             # Set proxy if configured
             proxy = self._get_proxy_settings()
@@ -392,8 +516,15 @@ class LauncherWorker:
 
         except FileNotFoundError as e:
             self._error(f"Configuration not found: {e}")
+        except LauncherCancelled as e:
+            logger.info("%s", e)
+            self._send_event(WorkerEvent(type=EventType.CANCELLED, message=str(e)))
         except ValueError as e:
             self._error(f"Invalid configuration: {e}")
+        except StateStorageError as e:
+            self._error(f"State storage error: {e}")
+        except InstallationError as e:
+            self._error(f"Installation error: {e}")
         except HTTPStatusError as e:
             self._error(f"Update error: {e}")
         except UpdaterError as e:

@@ -58,10 +58,12 @@ trust:
   instances where the project path cannot be resolved by the public API.
 - `entrypoint`: how Launcher starts your app. Choose one of `script`,
   `module`, or `project`.
-- `path`: optional location for app sources on the user's machine. When omitted
-  or null, it defaults to `"."`. Relative paths are resolved inside the
-  launcher's per-app runtime data directory, so the default is portable across
-  platforms.
+- `path`: optional default runtime installation root.
+  When omitted or null, it defaults to `"."`, which resolves to the per-user OS application-data directory.
+  Relative paths resolve below that directory, while absolute paths are used directly.
+  The first-run chooser may select a different exact root.
+- `ask_install_location`: whether to show the installation-root chooser on first launch.
+  It defaults to `true`; set it to `false` to accept the resolved `path` automatically.
 - `auto_update`: when true, Launcher checks the latest release.
 - `configuration`: dependency file in your app sources, relative to the
   downloaded app archive root. The file must exist. Set `configuration: null`
@@ -267,6 +269,7 @@ pythonpath:
   - backend/src
 install: install.py
 reinstall_on_update: false
+ask_install_location: true
 gui_timeout: 3
 init_message: "Initialized"
 init_timeout: 30
@@ -279,6 +282,7 @@ init_timeout: 30
 - `pythonpath`: override inferred Python import paths.
 - `install`: optional Python install script in your app sources.
 - `reinstall_on_update`: rerun the install script after an update.
+- `ask_install_location`: ask for the exact sources-and-environments root on first launch.
 - `gui_timeout`: seconds before showing a progress window.
 - `init_message`: optional text printed by your app when it is ready.
 - `init_timeout`: how long to wait for `init_message` when it is configured.
@@ -296,22 +300,27 @@ that case.
 
 Launcher does not edit the packaged YAML file during normal use.
 
-Values that change, such as the installed version, dependency hash, and proxy
-settings, are saved in the user's app data folder:
+Values that change, such as the installation root, installed version, dependency hash, and proxy settings, are saved in the user's state folder:
 
 - macOS: `~/Library/Application Support/<AppName>/launcher-state.yml`
 - Windows: `%APPDATA%\<AppName>\launcher-state.yml`
 - Linux: `~/.local/state/<AppName>/launcher-state.yml`
 
-Downloaded app sources are stored under the configured `path`. With the default
-`path: "."`, sources are stored beside the launcher state in the same per-app
-runtime data directory, with one subfolder per version:
+On first launch, Launcher asks for one exact runtime root unless `ask_install_location` is false.
+The default root is resolved from `path`.
+With `path: "."`, the defaults are:
 
-- macOS: `~/Library/Application Support/<AppName>/<appname>-<version>/`
-- Windows: `%APPDATA%\<AppName>\<appname>-<version>\`
-- Linux: `~/.local/state/<AppName>/<appname>-<version>/`
+- macOS: `~/Library/Application Support/<AppName>/`
+- Windows: `%LOCALAPPDATA%\<AppName>\`
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/<AppName>/`
 
-The launcher never writes downloaded sources inside the signed `.app` bundle.
+The selected root contains `sources/<appname>-<version>/`, `wetlands/`, and a Launcher ownership marker.
+If a matching installation already exists, the user can use it, replace its Launcher-owned runtime contents, or cancel.
+Launcher rejects unrelated nonempty directories and never writes downloaded sources inside the signed `.app` bundle.
+
+If the normal state folder is unwritable, Launcher can explicitly store its small state file in `<AppName>-launcher-data/` beside the launcher.
+On macOS this sidecar is beside, never inside, the signed `.app` bundle.
+`LAUNCHER_STATE_DIR` remains available as an administrative override.
 
 Proxy passwords are not stored in YAML. If the user chooses to remember a proxy
 password, Launcher stores it in the operating system keychain.

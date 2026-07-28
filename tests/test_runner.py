@@ -29,7 +29,7 @@ def test_start_missing_script_entrypoint_explains_config_and_archive(tmp_path):
 
     assert "Configured script entrypoint not found" in message
     assert "entrypoint.script: main.py" in message
-    assert str(sources / "myapp-v1.2.3") in message
+    assert str(sources / "sources" / "myapp-v1.2.3") in message
     assert "Update `entrypoint.script`" in message
     assert "include that file in the release archive" in message
 
@@ -37,7 +37,7 @@ def test_start_missing_script_entrypoint_explains_config_and_archive(tmp_path):
 def test_start_uses_inferred_working_directory_and_pythonpath(tmp_path):
     """A src-layout project should launch with importable project paths."""
     sources = tmp_path / "sources"
-    app_sources = sources / "myapp-v1.2.3"
+    app_sources = sources / "sources" / "myapp-v1.2.3"
     main_script = app_sources / "backend" / "src" / "my_app" / "desktop.py"
     main_script.parent.mkdir(parents=True)
     main_script.write_text("print('hello')")
@@ -77,7 +77,7 @@ def test_start_uses_inferred_working_directory_and_pythonpath(tmp_path):
 def test_start_uses_explicit_working_directory_and_pythonpath(tmp_path):
     """Explicit launch paths should override inferred import paths."""
     sources = tmp_path / "sources"
-    app_sources = sources / "myapp-v1.2.3"
+    app_sources = sources / "sources" / "myapp-v1.2.3"
     main_script = app_sources / "scripts" / "desktop.py"
     main_script.parent.mkdir(parents=True)
     (app_sources / "runtime").mkdir()
@@ -113,7 +113,7 @@ def test_start_uses_explicit_working_directory_and_pythonpath(tmp_path):
 def test_start_module_entrypoint_uses_run_module_and_args(tmp_path):
     """Module entrypoints should run with python -m style argv."""
     sources = tmp_path / "sources"
-    app_sources = sources / "myapp-v1.2.3"
+    app_sources = sources / "sources" / "myapp-v1.2.3"
     (app_sources / "backend" / "src" / "my_app").mkdir(parents=True)
     (app_sources / "backend" / "src" / "my_app" / "__main__.py").write_text("print('hello')")
     (app_sources / "backend" / "pyproject.toml").write_text("[project]\nname='my-app'\n")
@@ -151,7 +151,7 @@ def test_start_module_entrypoint_uses_run_module_and_args(tmp_path):
 def test_start_project_entrypoint_runs_installed_command(tmp_path):
     """Project entrypoints should run the installed console command."""
     sources = tmp_path / "sources"
-    app_sources = sources / "myapp-v1.2.3"
+    app_sources = sources / "sources" / "myapp-v1.2.3"
     (app_sources / "backend").mkdir(parents=True)
     (app_sources / "backend" / "pyproject.toml").write_text("[project]\nname='my-app'\n")
     config = AppConfig(
@@ -183,7 +183,7 @@ def test_start_project_entrypoint_runs_installed_command(tmp_path):
 def test_ensure_still_running_rejects_immediate_exit(tmp_path):
     """Immediate app exits should be reported as startup failures."""
     sources = tmp_path / "sources"
-    app_sources = sources / "myapp-v1.2.3"
+    app_sources = sources / "sources" / "myapp-v1.2.3"
     app_sources.mkdir(parents=True)
     main_script = app_sources / "main.py"
     main_script.write_text("print('hello')")
