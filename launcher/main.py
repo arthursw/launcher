@@ -22,6 +22,7 @@ CONFIG_ENV_VAR = "LAUNCHER_CONFIG"
 DEFAULT_ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 DEFAULT_SOURCE_ICON_NAME = "launcher.svg"
 DEFAULT_PNG_ICON_NAME = "launcher.png"
+DEFAULT_ICNS_ICON_NAME = "app.icns"
 INIT_ICON_NAMES = {
     ".icns": "app.icns",
     ".ico": "app.ico",
@@ -458,6 +459,10 @@ def _default_init_icons(packaging_dir: Path) -> list[tuple[Path, Path]]:
     source_png = DEFAULT_ASSETS_DIR / DEFAULT_PNG_ICON_NAME
     if source_png.is_file():
         icons.append((source_png, packaging_dir / INIT_ICON_NAMES[".png"]))
+
+    source_icns = DEFAULT_ASSETS_DIR / DEFAULT_ICNS_ICON_NAME
+    if source_icns.is_file():
+        icons.append((source_icns, packaging_dir / INIT_ICON_NAMES[".icns"]))
 
     return icons
 

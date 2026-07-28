@@ -24,13 +24,19 @@ Launcher writes:
 ```text
 packaging/
 `-- launcher/
+    |-- app.icns
     |-- application.yml
     |-- launcher.svg
     `-- icon_128x128.png
 ```
 
-Add `app.ico` for a native Windows executable and window icon, and add `app.icns` for a native macOS app-bundle icon.
-Launcher bundles every available standard icon and applies the appropriate icon to its Tkinter or Qt window at runtime; `icon_128x128.png` is the portable window-icon fallback on macOS and Linux.
+The default artwork includes `app.icns` for the native macOS app bundle and `icon_128x128.png` as the portable Tkinter or Qt fallback.
+Add `app.ico` for a native Windows executable and window icon.
+Launcher bundles every available standard icon and applies the appropriate format at runtime.
+Passing `launcher init --icon` installs only that custom icon, so provide native variants separately when the application needs them.
+
+Updating Launcher does not replace icons already copied into an initialized application repository.
+To adopt revised default artwork without changing application configuration, replace `packaging/launcher/icon_128x128.png` and `packaging/launcher/app.icns` with the corresponding files from the updated Launcher package.
 
 Edit `packaging/launcher/application.yml` for your app:
 

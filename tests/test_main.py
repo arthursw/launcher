@@ -300,11 +300,13 @@ def test_launcher_init_creates_default_packaging_files(tmp_path, monkeypatch):
     archive_script = tmp_path / "packaging" / "launcher" / "build-release-archive.py"
     source_icon = tmp_path / "packaging" / "launcher" / "launcher.svg"
     icon = tmp_path / "packaging" / "launcher" / "icon_128x128.png"
+    native_icon = tmp_path / "packaging" / "launcher" / "app.icns"
     assert result == 0
     assert config.is_file()
     assert not archive_script.exists()
     assert source_icon.is_file()
     assert icon.is_file()
+    assert native_icon.is_file()
     text = config.read_text()
     assert "name: MyApp" in text
     assert "repository: https://github.com/my-org/myapp.git" in text
@@ -383,16 +385,18 @@ def test_init_writes_non_default_path(tmp_path, monkeypatch):
 
 
 def test_launcher_init_uses_packaged_default_icon_assets(tmp_path, monkeypatch):
-    """Default init should copy the checked-in SVG source and PNG build icon."""
+    """Default init should copy the checked-in source, portable, and native icons."""
     monkeypatch.chdir(tmp_path)
 
     result = package_main.main(["init"])
 
     source_icon = tmp_path / "packaging" / "launcher" / "launcher.svg"
     png_icon = tmp_path / "packaging" / "launcher" / "icon_128x128.png"
+    icns_icon = tmp_path / "packaging" / "launcher" / "app.icns"
     assert result == 0
     assert source_icon.read_bytes() == (package_main.DEFAULT_ASSETS_DIR / "launcher.svg").read_bytes()
     assert png_icon.read_bytes() == (package_main.DEFAULT_ASSETS_DIR / "launcher.png").read_bytes()
+    assert icns_icon.read_bytes() == (package_main.DEFAULT_ASSETS_DIR / "app.icns").read_bytes()
 
 
 def test_launcher_init_copies_custom_png_icon(tmp_path, monkeypatch):
