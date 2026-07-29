@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>ExampleApp Launcher — Single-window demo</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="demo-shell">
+      <div class="demo-toolbar" aria-label="Demo controls">
+        <div>
+          <span class="eyebrow">Interactive layout demo</span>
+          <h1>Single-window launcher</h1>
+        </div>
+        <label class="state-picker">
+          <span>Preview state</span>
+          <select id="state-picker">
+            <option value="location">Choose location</option>
+            <option value="existing">Existing installation</option>
+            <option value="installing">Installing</option>
+            <option value="complete">Complete</option>
+            <option value="error">Error</option>
+          </select>
+        </label>
+      </div>
+
+      <section class="app-window" aria-label="ExampleApp launcher window">
+        <header class="titlebar">
+          <div class="traffic-lights" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="app-identity">
+            <div class="app-icon" aria-hidden="true">E</div>
+            <div>
+              <strong>ExampleApp</strong>
+              <span>Launcher</span>
+            </div>
+          </div>
+          <div class="status-chip" id="status-chip">
+            <span class="status-dot"></span>
+            <span id="status-chip-text">Waiting for you</span>
+          </div>
+        </header>
+
+        <div class="progress-strip">
+          <div class="progress-copy">
+            <span id="progress-label">Choose an installation location</span>
+            <span id="progress-value">Not started</span>
+          </div>
+          <div
+            class="progress-track"
+            id="progress-track"
+            role="progressbar"
+            aria-label="Installation progress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+        </div>
+
+        <div class="window-content">
+          <section class="task-pane" aria-live="polite">
+            <div class="task-view active" data-state="location">
+              <div class="step-kicker">First launch</div>
+              <h2>Where should ExampleApp be installed?</h2>
+              <p class="lede">The application sources and its private Python environment will both live inside this folder.</p>
+
+              <label class="field-label" for="install-path">Installation destination</label>
+              <div class="path-row">
+                <input id="install-path" type="text" value="/Users/alex/Library/Application Support/ExampleApp" spellcheck="false">
+                <button class="secondary" id="browse-button" type="button">Browse…</button>
+              </div>
+              <p class="field-help">This is the recommended per-user application data location.</p>
+
+              <div class="folder-preview" aria-label="Folders that will be created">
+                <div class="folder-preview-title">Inside this folder</div>
+                <div><span class="folder-icon" aria-hidden="true"></span><code>sources/</code><span>Application files</span></div>
+                <div><span class="folder-icon" aria-hidden="true"></span><code>wetlands/</code><span>Python environment</span></div>
+              </div>
+
+              <div class="action-row">
+                <button class="ghost" type="button" data-action="cancel">Cancel</button>
+                <button class="primary" type="button" data-action="continue">Install</button>
+              </div>
+            </div>
+
+            <div class="task-view" data-state="existing">
+              <div class="step-kicker">Installation found</div>
+              <h2>ExampleApp is already installed here</h2>
+              <p class="lede">Choose whether to keep the current installation or replace all launcher-managed runtime files.</p>
+
+              <div class="path-card">
+                <span class="path-card-icon" aria-hidden="true">E</span>
+                <div>
+                  <span>Existing installation</span>
+                  <code>/Users/alex/Library/Application Support/ExampleApp</code>
+                </div>
+              </div>
+
+              <div class="choice-list">
+                <button class="choice" type="button" data-action="use">
+                  <span class="choice-icon use-icon" aria-hidden="true">✓</span>
+                  <span><strong>Use existing</strong><small>Keep the installation and continue launching.</small></span>
+                  <span class="arrow" aria-hidden="true">→</span>
+                </button>
+                <button class="choice danger-choice" type="button" data-action="replace">
+                  <span class="choice-icon replace-icon" aria-hidden="true">↻</span>
+                  <span><strong>Replace</strong><small>Delete launcher-managed files and install a fresh copy.</small></span>
+                  <span class="arrow" aria-hidden="true">→</span>
+                </button>
+              </div>
+
+              <div class="action-row single-action">
+                <button class="ghost" type="button" data-action="cancel">Cancel</button>
+              </div>
+            </div>
+
+            <div class="task-view installing-view" data-state="installing">
+              <div class="step-kicker">Installing</div>
+              <div class="installing-graphic" aria-hidden="true">
+                <div class="orbit"><span></span></div>
+                <div class="app-icon large">E</div>
+              </div>
+              <h2>Preparing ExampleApp</h2>
+              <p class="lede">Downloading the current release and creating the Python environment. You can follow every step in the activity log.</p>
+              <div class="current-operation">
+                <span class="spinner" aria-hidden="true"></span>
+                <div>
+                  <strong id="operation-title">Creating Python environment</strong>
+                  <span id="operation-detail">Installing 42 packages with Wetlands…</span>
+                </div>
+              </div>
+              <p class="quiet-note">This window will close automatically when ExampleApp is ready.</p>
+            </div>
+
+            <div class="task-view result-view" data-state="complete">
+              <div class="result-icon success-icon" aria-hidden="true">✓</div>
+              <div class="step-kicker">Ready</div>
+              <h2>ExampleApp is installed</h2>
+              <p class="lede">The installation completed successfully. ExampleApp is starting now.</p>
+              <div class="summary-card">
+                <div><span>Version</span><strong>2.4.0</strong></div>
+                <div><span>Location</span><strong>Application Support/ExampleApp</strong></div>
+              </div>
+              <div class="action-row">
+                <button class="secondary" type="button" data-action="location">Back to demo</button>
+                <button class="primary" type="button">Open ExampleApp</button>
+              </div>
+            </div>
+
+            <div class="task-view result-view" data-state="error">
+              <div class="result-icon error-icon" aria-hidden="true">!</div>
+              <div class="step-kicker error-text">Installation stopped</div>
+              <h2>ExampleApp could not be installed</h2>
+              <p class="lede">The release archive could not be downloaded. Check your connection and try again.</p>
+              <div class="error-callout">
+                <strong>Download failed</strong>
+                <span>The server returned HTTP 503. No existing files were changed.</span>
+              </div>
+              <div class="action-row">
+                <button class="ghost" type="button" data-action="cancel">Close</button>
+                <button class="primary" type="button" data-action="retry">Try again</button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="log-pane" aria-label="Launcher activity log">
+            <div class="log-header">
+              <div>
+                <span class="live-indicator"><span></span>Live</span>
+                <h2>Activity log</h2>
+              </div>
+              <button class="copy-button" id="copy-button" type="button">Copy</button>
+            </div>
+            <div class="log-output" id="log-output" role="log" aria-live="polite" aria-relevant="additions text"></div>
+            <div class="log-footer">
+              <span id="log-status">Waiting for installation location</span>
+              <span>Launcher 1.3.0</span>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <p class="demo-note">Use the state menu or the buttons inside the window to explore the flow. The log remains visible in every state.</p>
+    </main>
+
+    <script src="demo.js"></script>
+  </body>
+</html>
