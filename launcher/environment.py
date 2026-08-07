@@ -2,16 +2,23 @@
 
 import hashlib
 import logging
+import os
 from pathlib import Path
-import re
 import subprocess
 import tomllib
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import unquote, urlparse
 
-from wetlands.environment_manager import EnvironmentManager
-from wetlands.environment import Environment
-from wetlands._internal.dependency_manager import LocalDependency
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+import yaml
+from wetlands import (
+    EnvironmentManager,
+    EnvironmentSpec,
+    LocalPackage,
+    ManagedEnvironment,
+    local_package_content_identity,
+)
 
 if TYPE_CHECKING:
     from .config import AppConfig
@@ -40,27 +47,20 @@ class LauncherEnvironmentManager:
     def __init__(
         self,
         wetlands_path: Optional[Path] = None,
-        log_file_path: Optional[Path] = None,
     ) -> None:
         """Initialize the environment manager.
 
         Args:
             wetlands_path: Path where Wetlands stores its data (pixi installation, etc.)
                           Defaults to ~/.launcher/wetlands
-            log_file_path: Path to the log file. Defaults to wetlands_path/wetlands.log
         """
         if wetlands_path is None:
             wetlands_path = Path.home() / ".launcher" / "wetlands"
 
         wetlands_path.mkdir(parents=True, exist_ok=True)
 
-        if log_file_path is None:
-            log_file_path = wetlands_path / "wetlands.log"
-
-        self._manager = EnvironmentManager(
-            wetlands_instance_path=wetlands_path,
-            log_file_path=log_file_path,
-        )
+        self._wetlands_path = wetlands_path
+        self._manager = EnvironmentManager(root=wetlands_path)
 
         logger.info(f"EnvironmentManager initialized at {wetlands_path}")
 
@@ -78,8 +78,7 @@ class LauncherEnvironmentManager:
         Returns:
             True if the environment exists
         """
-        env_path = self._manager.settings_manager.get_environment_path_from_name(env_name)
-        return self._manager.environment_exists(env_path)
+        return any(info.name == env_name and info.ready for info in self._manager.managed_environments())
 
     def get_environment_path(self, env_name: str) -> Path:
         """Get the path to an environment.
@@ -90,12 +89,12 @@ class LauncherEnvironmentManager:
         Returns:
             Path to the environment
         """
-        return self._manager.settings_manager.get_environment_path_from_name(env_name)
+        return self._manager.environments_root / env_name
 
     def get_or_create_environment(
         self,
         config: "AppConfig",
-    ) -> Environment:
+    ) -> ManagedEnvironment:
         """Get an existing environment or create a new one.
 
         Args:
@@ -107,40 +106,28 @@ class LauncherEnvironmentManager:
         env_name = config.env_name
         config_file_path = config.config_file_path
         extras = getattr(config, "extras", []) or []
-        local_dependency = self.project_local_dependency(config)
+        local_package = self.project_local_dependency(config)
 
         if config_file_path and config_file_path.exists():
-            logger.info(f"Creating environment '{env_name}' from config: {config_file_path}")
-            if local_dependency:
-                dependencies = self._manager._parse_dependencies_from_config(
+            logger.info(f"Provisioning environment '{env_name}' from config: {config_file_path}")
+            try:
+                spec = _environment_spec_from_config(
                     config_file_path,
                     environment_name=env_name,
-                    optional_dependencies=extras or None,
+                    optional_dependencies=extras,
+                    local_packages=(local_package,) if local_package else (),
                 )
-                dependencies["local"] = [
-                    *dependencies.get("local", []),
-                    local_dependency,
-                ]
-                try:
-                    return self._manager.create(name=env_name, dependencies=dependencies)
-                except Exception as e:
-                    raise _environment_create_error(e, env_name, config_file_path, config) from e
-            try:
-                return self._manager.create_from_config(
-                    name=env_name,
-                    config_path=config_file_path,
-                    optional_dependencies=extras or None,
-                )
+                return self._manager.provision(env_name, spec, replace_existing=True).wait_for()
             except Exception as e:
                 raise _environment_create_error(e, env_name, config_file_path, config) from e
-        if extras:
+        elif extras:
             raise EnvironmentError(
                 "Dependency extras require a dependency config file, but "
                 f"{config.configuration!r} was not found at {config_file_path}. "
                 "Update `configuration` so it points to the dependency file inside "
                 "the downloaded app sources, or remove `extras`."
             )
-        if config_file_path:
+        elif config_file_path:
             raise EnvironmentError(
                 "Dependency config file was not found: "
                 f"{config_file_path}. Update `configuration` so it points to "
@@ -148,11 +135,10 @@ class LauncherEnvironmentManager:
                 "app intentionally has no dependency config file, set "
                 "`configuration: null`."
             )
-        logger.info(f"Creating environment '{env_name}' with no dependencies")
+        logger.info(f"Provisioning environment '{env_name}' with no configured dependencies")
         try:
-            if local_dependency:
-                return self._manager.create(name=env_name, dependencies={"local": [local_dependency]})
-            return self._manager.create(name=env_name)
+            spec = EnvironmentSpec(local=(local_package,) if local_package else ())
+            return self._manager.provision(env_name, spec, replace_existing=True).wait_for()
         except Exception as e:
             raise _environment_create_error(e, env_name, config_file_path, config) from e
 
@@ -160,7 +146,7 @@ class LauncherEnvironmentManager:
         """Return whether Wetlands can install the project as a local dependency."""
         return self._is_project_entrypoint(config)
 
-    def project_local_dependency(self, config: "AppConfig") -> Optional[LocalDependency]:
+    def project_local_dependency(self, config: "AppConfig") -> Optional[LocalPackage]:
         """Build the Wetlands local dependency for project-mode apps when supported."""
         if not self.project_install_managed_by_environment(config):
             return None
@@ -194,11 +180,11 @@ class LauncherEnvironmentManager:
                 "  - Or change the project dependency to a published package/version that Pixi can download.\n"
                 "  - Or remove stale local path dependencies from the packaged pyproject.toml."
             )
-        return {
-            "name": _normalize_distribution_name(package_name),
-            "path": project_directory,
-            "editable": True,
-        }
+        return LocalPackage(
+            source=project_directory,
+            extras=tuple(config.extras),
+            content_identity=local_package_content_identity(project_directory),
+        )
 
     @staticmethod
     def _is_project_entrypoint(config: "AppConfig") -> bool:
@@ -206,8 +192,7 @@ class LauncherEnvironmentManager:
 
     def uses_pixi(self) -> bool:
         """Return whether the underlying Wetlands manager is using Pixi."""
-        settings = getattr(self._manager, "settings_manager", None)
-        return bool(getattr(settings, "use_pixi", False))
+        return True
 
     def delete_environment(self, env_name: str) -> bool:
         """Delete an environment.
@@ -218,16 +203,12 @@ class LauncherEnvironmentManager:
         Returns:
             True if the environment was deleted, False if it didn't exist
         """
-        env_path = self._manager.settings_manager.get_environment_path_from_name(env_name)
-
-        if not self._manager.environment_exists(env_path):
+        if not any(info.name == env_name for info in self._manager.managed_environments()):
             logger.warning(f"Environment '{env_name}' does not exist")
             return False
 
-        # Load the environment to get access to delete method
         try:
-            env = self._manager.load(env_name, env_path)
-            env.delete()
+            self._manager.remove(env_name).wait_for()
             logger.info(f"Environment '{env_name}' deleted")
             return True
         except Exception as e:
@@ -247,37 +228,372 @@ class LauncherEnvironmentManager:
             https_proxy: HTTPS proxy URL
             ssl_cert_file: Path to a custom CA certificate file
         """
-        import os as _os
-
         proxies = {}
         if http_proxy:
             proxies["http"] = http_proxy
         if https_proxy:
             proxies["https"] = https_proxy
 
-        if proxies:
-            self._manager.set_proxies(proxies)
-            logger.info(f"Proxies set: {proxies}")
+        if dict(self._manager.network or {}) != proxies:
+            self._manager.close()
+            self._manager = EnvironmentManager(root=self._wetlands_path, network=proxies or None)
+            logger.info("Proxy settings updated for: %s", ", ".join(sorted(proxies)) or "none")
 
         if ssl_cert_file:
-            _os.environ["SSL_CERT_FILE"] = ssl_cert_file
-            _os.environ["REQUESTS_CA_BUNDLE"] = ssl_cert_file
+            os.environ["SSL_CERT_FILE"] = ssl_cert_file
+            os.environ["REQUESTS_CA_BUNDLE"] = ssl_cert_file
             logger.info(f"SSL certificate env vars set to: {ssl_cert_file}")
 
-    def get_process_logger(self, process: subprocess.Popen):
-        """Get the ProcessLogger for a running process.
-
-        Args:
-            process: The process
-
-        Returns:
-            The ProcessLogger instance, or None if not found
-        """
-        return self._manager.get_process_logger(process)
+    def execute_command(
+        self,
+        environment: ManagedEnvironment,
+        command: list[str],
+        *,
+        cwd: Optional[Path] = None,
+        **popen_kwargs: Any,
+    ) -> subprocess.Popen:
+        """Start an argv command in a provisioned Wetlands Pixi environment."""
+        child_environment = os.environ.copy()
+        child_environment.update(
+            {
+                "PIXI_HOME": str(self._manager.state_root / "pixi-home"),
+                "PIXI_CACHE_DIR": str(self._manager.state_root / "pixi-cache"),
+            }
+        )
+        child_environment.update(
+            {
+                "NO_PROXY" if scheme == "no_proxy" else f"{scheme.upper()}_PROXY": value
+                for scheme, value in (self._manager.network or {}).items()
+            }
+        )
+        argv = [
+            str(environment.pixi_executable_path),
+            "run",
+            "--manifest-path",
+            str(environment.pixi_manifest_path),
+            *command,
+        ]
+        return subprocess.Popen(argv, cwd=cwd, env=child_environment, **popen_kwargs)
 
     def exit(self) -> None:
         """Clean up and exit all environments."""
-        self._manager.exit()
+        self._manager.close()
+
+
+def _environment_spec_from_config(
+    config_path: Path,
+    *,
+    environment_name: str,
+    optional_dependencies: list[str],
+    local_packages: tuple[LocalPackage, ...],
+) -> EnvironmentSpec:
+    """Translate supported app dependency files into a Wetlands 2 recipe."""
+    name = config_path.name.lower()
+    if name in {"pyproject.toml", "pixi.toml"}:
+        try:
+            document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+            raise EnvironmentError(f"Invalid TOML dependency config {config_path}: {error}") from error
+        pixi = document.get("tool", {}).get("pixi", {}) if name == "pyproject.toml" else document
+        if pixi:
+            python, conda, pypi, channels, config_local = _pixi_dependencies(
+                pixi,
+                config_path.parent,
+                environment_name,
+                optional_dependencies,
+            )
+        elif name == "pyproject.toml":
+            python, conda, pypi, channels, config_local = _pep621_dependencies(
+                document,
+                optional_dependencies,
+                config_path.parent,
+            )
+        else:
+            raise EnvironmentError(f"No Pixi dependency tables were found in {config_path}")
+    elif name in {"environment.yml", "environment.yaml"}:
+        python, conda, pypi, channels, config_local = _environment_yml_dependencies(config_path)
+        if optional_dependencies:
+            raise EnvironmentError("Dependency extras are only supported for pyproject.toml and Pixi features")
+    elif name == "requirements.txt":
+        python, conda, pypi, channels, config_local = (
+            ">=3.9",
+            (),
+            _requirements_dependencies(config_path),
+            ("conda-forge",),
+            (),
+        )
+        if optional_dependencies:
+            raise EnvironmentError("Dependency extras are not supported for requirements.txt")
+    else:
+        raise EnvironmentError(
+            f"Unsupported dependency config {config_path.name!r}; expected pyproject.toml, pixi.toml, "
+            "environment.yml, environment.yaml, or requirements.txt"
+        )
+
+    all_local = _deduplicate_local_packages((*config_local, *local_packages))
+    local_names = {package.distribution_name for package in all_local}
+    filtered_pypi = tuple(
+        dependency
+        for dependency in pypi
+        if canonicalize_name(Requirement(dependency).name) not in local_names
+    )
+    return EnvironmentSpec(
+        python=python,
+        conda=conda,
+        pypi=filtered_pypi,
+        channels=channels,
+        local=all_local,
+    )
+
+
+def _pep621_dependencies(
+    document: dict,
+    optional_dependencies: list[str],
+    base: Path,
+) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[LocalPackage, ...]]:
+    project = document.get("project")
+    if not isinstance(project, dict):
+        return ">=3.9", (), (), ("conda-forge",), ()
+
+    dependency_groups = [project.get("dependencies", [])]
+    optional = project.get("optional-dependencies", {})
+    if not isinstance(optional, dict):
+        optional = {}
+    for group in optional_dependencies:
+        if group not in optional:
+            raise EnvironmentError(
+                f"Optional dependency group {group!r} was not found; available groups: {sorted(optional)}"
+            )
+        dependency_groups.append(optional[group])
+
+    uv = document.get("tool", {}).get("uv", {})
+    uv_sources = uv.get("sources", {}) if isinstance(uv, dict) else {}
+    if not isinstance(uv_sources, dict):
+        uv_sources = {}
+    dependencies: list[str] = []
+    local: list[LocalPackage] = []
+    for group in dependency_groups:
+        group_dependencies, group_local = _requirements_and_local_packages(group, base, uv_sources)
+        dependencies.extend(group_dependencies)
+        local.extend(group_local)
+
+    requires_python = project.get("requires-python", ">=3.9")
+    return (
+        str(requires_python),
+        (),
+        tuple(dict.fromkeys(dependencies)),
+        ("conda-forge",),
+        _deduplicate_local_packages(tuple(local)),
+    )
+
+
+def _pixi_dependencies(
+    pixi: dict,
+    base: Path,
+    environment_name: str,
+    optional_dependencies: list[str],
+) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[LocalPackage, ...]]:
+    if not isinstance(pixi, dict):
+        raise EnvironmentError("Pixi configuration must be a TOML table")
+
+    environments = pixi.get("environments", {})
+    selected_features: list[str] = []
+    if isinstance(environments, dict) and environments:
+        selected = environments.get(environment_name, environments.get("default", {}))
+        if not isinstance(selected, dict):
+            raise EnvironmentError(f"Pixi environment {environment_name!r} must be a TOML table")
+        selected_features.extend(str(feature) for feature in selected.get("features", []))
+    selected_features.extend(optional_dependencies)
+    selected_features = list(dict.fromkeys(selected_features))
+
+    conda_tables = [pixi.get("dependencies", {})]
+    pypi_tables = [pixi.get("pypi-dependencies", {})]
+    features = pixi.get("feature", {})
+    if not isinstance(features, dict):
+        features = {}
+    for feature_name in selected_features:
+        feature = features.get(feature_name)
+        if not isinstance(feature, dict):
+            raise EnvironmentError(f"Pixi feature {feature_name!r} was not found; available features: {sorted(features)}")
+        conda_tables.append(feature.get("dependencies", {}))
+        pypi_tables.append(feature.get("pypi-dependencies", {}))
+
+    python = ">=3.9"
+    conda: list[str] = []
+    pypi: list[str] = []
+    local: list[LocalPackage] = []
+    for table in conda_tables:
+        if not isinstance(table, dict):
+            raise EnvironmentError("Pixi dependencies must be a TOML table")
+        for package, constraint in table.items():
+            rendered = _render_conda_requirement(str(package), constraint)
+            if canonicalize_name(str(package)) == "python":
+                python = rendered.removeprefix(str(package)) or ">=3.9"
+            else:
+                conda.append(rendered)
+    for table in pypi_tables:
+        if not isinstance(table, dict):
+            raise EnvironmentError("Pixi pypi-dependencies must be a TOML table")
+        for package, constraint in table.items():
+            dependency, local_package = _render_pixi_pypi_requirement(str(package), constraint, base)
+            if dependency:
+                pypi.append(dependency)
+            if local_package:
+                local.append(local_package)
+
+    workspace = pixi.get("workspace", pixi.get("project", {}))
+    raw_channels = workspace.get("channels", ["conda-forge"]) if isinstance(workspace, dict) else ["conda-forge"]
+    channels = tuple(str(channel) for channel in raw_channels) if raw_channels else ("conda-forge",)
+    return (
+        python,
+        tuple(dict.fromkeys(conda)),
+        tuple(dict.fromkeys(pypi)),
+        channels,
+        tuple(local),
+    )
+
+
+def _render_conda_requirement(package: str, constraint: object) -> str:
+    if isinstance(constraint, dict):
+        constraint = constraint.get("version", "*")
+    version = str(constraint).strip()
+    return package if version in {"", "*"} else f"{package}{version}"
+
+
+def _render_pixi_pypi_requirement(
+    package: str,
+    constraint: object,
+    base: Path,
+) -> tuple[Optional[str], Optional[LocalPackage]]:
+    if isinstance(constraint, str):
+        version = constraint.strip()
+        return (package if version in {"", "*"} else f"{package}{version}"), None
+    if not isinstance(constraint, dict):
+        raise EnvironmentError(f"Invalid Pixi PyPI dependency for {package!r}")
+
+    extras = tuple(str(extra) for extra in constraint.get("extras", []))
+    extras_text = f"[{','.join(extras)}]" if extras else ""
+    if "path" in constraint:
+        source = _resolve_dependency_path(str(constraint["path"]), base)
+        return None, LocalPackage(
+            source=source,
+            extras=extras,
+            content_identity=local_package_content_identity(source),
+        )
+    if "git" in constraint:
+        revision = constraint.get("rev") or constraint.get("revision")
+        if not revision:
+            raise EnvironmentError(f"Pixi Git dependency {package!r} must be pinned with rev")
+        return f"{package}{extras_text} @ git+{constraint['git']}@{revision}", None
+    if "url" in constraint:
+        return f"{package}{extras_text} @ {constraint['url']}", None
+    version = str(constraint.get("version", "*")).strip()
+    return (f"{package}{extras_text}" if version in {"", "*"} else f"{package}{extras_text}{version}"), None
+
+
+def _environment_yml_dependencies(
+    config_path: Path,
+) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[LocalPackage, ...]]:
+    try:
+        document = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise EnvironmentError(f"Invalid YAML dependency config {config_path}: {error}") from error
+    if not isinstance(document, dict):
+        raise EnvironmentError(f"Dependency config {config_path} must contain a YAML mapping")
+
+    python = ">=3.9"
+    conda: list[str] = []
+    pypi: list[str] = []
+    for dependency in document.get("dependencies", []):
+        if isinstance(dependency, str):
+            if canonicalize_name(dependency.split("=", 1)[0]) == "python":
+                python = dependency.removeprefix(dependency.split("=", 1)[0]).replace("=", "", 1) or ">=3.9"
+            elif dependency != "pip":
+                conda.append(dependency)
+        elif isinstance(dependency, dict) and isinstance(dependency.get("pip"), list):
+            pypi.extend(_requirement_strings(dependency["pip"]))
+    raw_channels = document.get("channels", ["conda-forge"])
+    channels = tuple(str(channel) for channel in raw_channels) if raw_channels else ("conda-forge",)
+    return python, tuple(conda), tuple(pypi), channels, ()
+
+
+def _requirements_dependencies(config_path: Path) -> tuple[str, ...]:
+    dependencies = []
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("#"):
+            dependencies.extend(_requirement_strings([line]))
+    return tuple(dependencies)
+
+
+def _requirements_and_local_packages(
+    values: object,
+    base: Path,
+    source_table: dict,
+) -> tuple[list[str], list[LocalPackage]]:
+    if not isinstance(values, list):
+        raise EnvironmentError("Python dependencies must be a list of requirement strings")
+    dependencies: list[str] = []
+    local: list[LocalPackage] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise EnvironmentError("Python dependencies must be requirement strings")
+        try:
+            requirement = Requirement(value)
+        except InvalidRequirement as error:
+            raise EnvironmentError(f"Invalid Python dependency {value!r}: {error}") from error
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+
+        source: Optional[Path] = None
+        configured_source = source_table.get(requirement.name, source_table.get(canonicalize_name(requirement.name)))
+        if isinstance(configured_source, dict) and isinstance(configured_source.get("path"), str):
+            source = _resolve_dependency_path(configured_source["path"], base)
+        elif isinstance(configured_source, str):
+            source = _path_from_dependency_target(configured_source, base)
+        elif requirement.url:
+            source = _path_from_dependency_target(requirement.url, base)
+
+        if source is not None:
+            local.append(
+                LocalPackage(
+                    source=source,
+                    extras=tuple(sorted(requirement.extras)),
+                    content_identity=local_package_content_identity(source),
+                )
+            )
+        else:
+            dependencies.extend(_requirement_strings([value]))
+    return dependencies, local
+
+
+def _requirement_strings(values: object) -> list[str]:
+    if not isinstance(values, list):
+        raise EnvironmentError("Python dependencies must be a list of requirement strings")
+    dependencies: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise EnvironmentError("Python dependencies must be requirement strings")
+        try:
+            requirement = Requirement(value)
+        except InvalidRequirement as error:
+            raise EnvironmentError(f"Invalid Python dependency {value!r}: {error}") from error
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        extras = f"[{','.join(sorted(requirement.extras))}]" if requirement.extras else ""
+        target = f" @ {requirement.url}" if requirement.url else str(requirement.specifier)
+        dependencies.append(f"{requirement.name}{extras}{target}")
+    return dependencies
+
+
+def _deduplicate_local_packages(packages: tuple[LocalPackage, ...]) -> tuple[LocalPackage, ...]:
+    by_name: dict[str, LocalPackage] = {}
+    for package in packages:
+        existing = by_name.get(package.distribution_name)
+        if existing is not None and existing != package:
+            raise EnvironmentError(f"Multiple local packages declare distribution {package.distribution_name!r}")
+        by_name[package.distribution_name] = package
+    return tuple(by_name.values())
 
 
 def compute_dependency_hash(config: "AppConfig") -> str:
@@ -413,7 +729,7 @@ def _path_from_dependency_target(target: str, base: Path) -> Optional[Path]:
     if target.startswith("file:"):
         parsed = urlparse(target)
         if parsed.scheme == "file":
-            return Path(unquote(parsed.path)).resolve()
+            return _resolve_dependency_path(unquote(parsed.path), base)
     if target.startswith((".", "/", "~")):
         return _resolve_dependency_path(target, base)
     return None
@@ -424,10 +740,6 @@ def _resolve_dependency_path(value: str, base: Path) -> Path:
     if not path.is_absolute():
         path = base / path
     return path.resolve()
-
-
-def _normalize_distribution_name(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower()
 
 
 def _environment_create_error(

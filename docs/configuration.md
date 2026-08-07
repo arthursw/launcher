@@ -107,7 +107,7 @@ entrypoint:
 ```
 
 In project mode, Launcher installs the project package from `project_directory`, then runs `command`.
-Launcher passes the project to Wetlands as an editable local dependency so Pixi and Micromamba can use their own install mechanisms.
+Launcher passes an immutable content-identified snapshot of the project to Wetlands so Pixi can install the exact downloaded release contents.
 The environment is recreated when the app release or project install inputs change.
 The project directory should contain a `pyproject.toml` with `[project].name` so Wetlands can name the local package.
 If that project declares other local path dependencies, such as `../packages/my-core` in `[project].dependencies`, `[tool.uv.sources]`, or `[tool.pixi.pypi-dependencies]`, those directories must also exist in the downloaded release archive.

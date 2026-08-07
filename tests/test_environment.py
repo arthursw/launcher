@@ -1,6 +1,7 @@
 """Tests for the environment module."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ from launcher.config import AppConfig, EntryPointConfig
 from launcher.environment import (
     EnvironmentError as LauncherEnvironmentError,
     LauncherEnvironmentManager,
+    _environment_spec_from_config,
     compute_dependency_hash,
     compute_project_install_fingerprint,
 )
@@ -28,8 +30,7 @@ class TestLauncherEnvironmentManager:
         # Should use default path
         mock_env_manager_class.assert_called_once()
         call_kwargs = mock_env_manager_class.call_args[1]
-        assert 'wetlands_instance_path' in call_kwargs
-        assert '.launcher/wetlands' in str(call_kwargs['wetlands_instance_path'])
+        assert '.launcher/wetlands' in str(call_kwargs['root'])
 
     @patch('launcher.environment.EnvironmentManager')
     def test_initialization_custom_path(self, mock_env_manager_class, tmp_path):
@@ -41,7 +42,7 @@ class TestLauncherEnvironmentManager:
         LauncherEnvironmentManager(wetlands_path=custom_path)
 
         call_kwargs = mock_env_manager_class.call_args[1]
-        assert call_kwargs['wetlands_instance_path'] == custom_path
+        assert call_kwargs['root'] == custom_path
 
     @patch('launcher.environment.EnvironmentManager')
     def test_environment_exists(self, mock_env_manager_class):
@@ -49,15 +50,15 @@ class TestLauncherEnvironmentManager:
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
 
-        # Setup mock
-        mock_instance.settings_manager.get_environment_path_from_name.return_value = Path("/env/path")
-        mock_instance.environment_exists.return_value = True
+        mock_instance.managed_environments.return_value = (
+            SimpleNamespace(name="test_env", ready=True),
+        )
 
         manager = LauncherEnvironmentManager()
         result = manager.environment_exists("test_env")
 
         assert result is True
-        mock_instance.settings_manager.get_environment_path_from_name.assert_called_with("test_env")
+        mock_instance.managed_environments.assert_called_once_with()
 
     @patch('launcher.environment.EnvironmentManager')
     def test_get_or_create_environment_from_config(self, mock_env_manager_class, tmp_path):
@@ -66,7 +67,7 @@ class TestLauncherEnvironmentManager:
         mock_env_manager_class.return_value = mock_instance
 
         mock_env = MagicMock()
-        mock_instance.create_from_config.return_value = mock_env
+        mock_instance.provision.return_value.wait_for.return_value = mock_env
 
         # Create a mock config
         config = MagicMock()
@@ -79,23 +80,24 @@ class TestLauncherEnvironmentManager:
         result = manager.get_or_create_environment(config)
 
         assert result == mock_env
-        mock_instance.create_from_config.assert_called_once()
-        assert mock_instance.create_from_config.call_args.kwargs["optional_dependencies"] is None
+        name, spec = mock_instance.provision.call_args.args
+        assert name == "test_env"
+        assert spec.pypi == ()
+        assert mock_instance.provision.call_args.kwargs == {"replace_existing": True}
 
     @patch('launcher.environment.EnvironmentManager')
     def test_project_mode_adds_wetlands_local_dependency_from_config(self, mock_env_manager_class, tmp_path):
         """Project mode should let Wetlands install the local package with backend-specific commands."""
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
-        mock_instance._parse_dependencies_from_config.return_value = {"pip": ["requests"]}
         mock_env = MagicMock()
-        mock_instance.create.return_value = mock_env
+        mock_instance.provision.return_value.wait_for.return_value = mock_env
 
         sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
         pyproject = project / "pyproject.toml"
-        pyproject.write_text("[project]\nname = 'My App'\n")
+        pyproject.write_text("[project]\nname = 'my-app'\ndependencies = ['requests']\n")
         config = AppConfig(
             name="MyApp",
             entrypoint=EntryPointConfig(mode="project", command="my-app-gui", project_directory="backend"),
@@ -109,25 +111,15 @@ class TestLauncherEnvironmentManager:
         result = manager.get_or_create_environment(config)
 
         assert result == mock_env
-        mock_instance.create_from_config.assert_not_called()
-        mock_instance._parse_dependencies_from_config.assert_called_once_with(
-            pyproject,
-            environment_name="MyApp",
-            optional_dependencies=None,
-        )
-        mock_instance.create.assert_called_once_with(
-            name="MyApp",
-            dependencies={
-                "pip": ["requests"],
-                "local": [
-                    {
-                        "name": "my-app",
-                        "path": project,
-                        "editable": True,
-                    }
-                ],
-            },
-        )
+        name, spec = mock_instance.provision.call_args.args
+        assert name == "MyApp"
+        assert spec.pypi == ("requests",)
+        assert len(spec.local) == 1
+        assert spec.local[0].distribution_name == "my-app"
+        assert spec.local[0].source == project
+        assert spec.local[0].editable is False
+        assert spec.local[0].content_identity is not None
+        assert mock_instance.provision.call_args.kwargs == {"replace_existing": True}
 
     @patch('launcher.environment.EnvironmentManager')
     def test_project_mode_requires_package_name_for_wetlands_local_dependency(
@@ -244,8 +236,7 @@ class TestLauncherEnvironmentManager:
         """Wetlands command failures should surface as actionable environment errors."""
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
-        mock_instance._parse_dependencies_from_config.return_value = {"pip": ["requests"]}
-        mock_instance.create.side_effect = Exception("failed to solve the pypi requirements")
+        mock_instance.provision.return_value.wait_for.side_effect = Exception("failed to solve the pypi requirements")
         sources = tmp_path / "apps" / "sources" / "myapp-v1.2.3"
         project = sources / "backend"
         project.mkdir(parents=True)
@@ -278,23 +269,26 @@ class TestLauncherEnvironmentManager:
         mock_env_manager_class.return_value = mock_instance
 
         mock_env = MagicMock()
-        mock_instance.create_from_config.return_value = mock_env
+        mock_instance.provision.return_value.wait_for.return_value = mock_env
 
         config = MagicMock()
         config.env_name = "test_env"
         config.extras = ["desktop", "server"]
         config.config_file_path = tmp_path / "pyproject.toml"
-        (tmp_path / "pyproject.toml").write_text("[project]\nname='test'")
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname='test'\n"
+            "[project.optional-dependencies]\n"
+            "desktop = ['pyside6']\n"
+            "server = ['requests']\n"
+        )
 
         manager = LauncherEnvironmentManager()
         result = manager.get_or_create_environment(config)
 
         assert result == mock_env
-        mock_instance.create_from_config.assert_called_once_with(
-            name="test_env",
-            config_path=tmp_path / "pyproject.toml",
-            optional_dependencies=["desktop", "server"],
-        )
+        name, spec = mock_instance.provision.call_args.args
+        assert name == "test_env"
+        assert spec.pypi == ("pyside6", "requests")
 
     @patch('launcher.environment.EnvironmentManager')
     def test_get_or_create_environment_configuration_disabled(self, mock_env_manager_class):
@@ -303,7 +297,7 @@ class TestLauncherEnvironmentManager:
         mock_env_manager_class.return_value = mock_instance
 
         mock_env = MagicMock()
-        mock_instance.create.return_value = mock_env
+        mock_instance.provision.return_value.wait_for.return_value = mock_env
 
         config = MagicMock()
         config.env_name = "test_env"
@@ -315,7 +309,10 @@ class TestLauncherEnvironmentManager:
         result = manager.get_or_create_environment(config)
 
         assert result == mock_env
-        mock_instance.create.assert_called_once_with(name="test_env")
+        name, spec = mock_instance.provision.call_args.args
+        assert name == "test_env"
+        assert spec.pypi == ()
+        assert spec.conda == ()
 
     @patch('launcher.environment.EnvironmentManager')
     def test_get_or_create_environment_requires_configured_file(self, mock_env_manager_class):
@@ -368,10 +365,14 @@ class TestLauncherEnvironmentManager:
         manager = LauncherEnvironmentManager()
         manager.set_proxies("http://proxy:8080", "https://proxy:8080")
 
-        mock_instance.set_proxies.assert_called_once_with({
-            "http": "http://proxy:8080",
-            "https": "https://proxy:8080"
-        })
+        mock_instance.close.assert_called_once_with()
+        assert mock_env_manager_class.call_args.kwargs == {
+            "root": manager._wetlands_path,
+            "network": {
+                "http": "http://proxy:8080",
+                "https": "https://proxy:8080",
+            },
+        }
 
     @patch('launcher.environment.EnvironmentManager')
     def test_set_proxies_http_only(self, mock_env_manager_class):
@@ -382,9 +383,11 @@ class TestLauncherEnvironmentManager:
         manager = LauncherEnvironmentManager()
         manager.set_proxies("http://proxy:8080", None)
 
-        mock_instance.set_proxies.assert_called_once_with({
-            "http": "http://proxy:8080"
-        })
+        mock_instance.close.assert_called_once_with()
+        assert mock_env_manager_class.call_args.kwargs == {
+            "root": manager._wetlands_path,
+            "network": {"http": "http://proxy:8080"},
+        }
 
     @patch('launcher.environment.EnvironmentManager')
     def test_set_proxies_with_ssl_cert_file(self, mock_env_manager_class, monkeypatch):
@@ -416,7 +419,7 @@ class TestLauncherEnvironmentManager:
         manager = LauncherEnvironmentManager()
         manager.exit()
 
-        mock_instance.exit.assert_called_once()
+        mock_instance.close.assert_called_once()
 
     @patch('launcher.environment.EnvironmentManager')
     def test_delete_environment_success(self, mock_env_manager_class):
@@ -424,18 +427,17 @@ class TestLauncherEnvironmentManager:
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
 
-        # Setup mock
-        mock_instance.settings_manager.get_environment_path_from_name.return_value = Path("/env/path")
-        mock_instance.environment_exists.return_value = True
-
-        mock_env = MagicMock()
-        mock_instance.load.return_value = mock_env
+        mock_instance.managed_environments.return_value = (
+            SimpleNamespace(name="test_env", ready=True),
+        )
+        removal = mock_instance.remove.return_value
 
         manager = LauncherEnvironmentManager()
         result = manager.delete_environment("test_env")
 
         assert result is True
-        mock_env.delete.assert_called_once()
+        mock_instance.remove.assert_called_once_with("test_env")
+        removal.wait_for.assert_called_once_with()
 
     @patch('launcher.environment.EnvironmentManager')
     def test_delete_environment_not_exists(self, mock_env_manager_class):
@@ -443,14 +445,96 @@ class TestLauncherEnvironmentManager:
         mock_instance = MagicMock()
         mock_env_manager_class.return_value = mock_instance
 
-        # Setup mock - environment doesn't exist
-        mock_instance.settings_manager.get_environment_path_from_name.return_value = Path("/env/path")
-        mock_instance.environment_exists.return_value = False
+        mock_instance.managed_environments.return_value = ()
 
         manager = LauncherEnvironmentManager()
         result = manager.delete_environment("test_env")
 
         assert result is False
+
+    @patch('launcher.environment.subprocess.Popen')
+    @patch('launcher.environment.EnvironmentManager')
+    def test_execute_command_uses_managed_pixi_project(
+        self,
+        mock_env_manager_class,
+        mock_popen,
+        tmp_path,
+    ):
+        """Application commands should run through the public Wetlands Pixi paths."""
+        mock_instance = MagicMock()
+        mock_instance.state_root = tmp_path / "state"
+        mock_instance.network = {"https": "https://proxy:8080"}
+        mock_env_manager_class.return_value = mock_instance
+        environment = SimpleNamespace(
+            pixi_executable_path=tmp_path / "pixi",
+            pixi_manifest_path=tmp_path / "environment" / "pixi.toml",
+        )
+        manager = LauncherEnvironmentManager(wetlands_path=tmp_path / "wetlands")
+
+        manager.execute_command(environment, ["python", "app.py"], cwd=tmp_path)
+
+        argv = mock_popen.call_args.args[0]
+        assert argv == [
+            str(tmp_path / "pixi"),
+            "run",
+            "--manifest-path",
+            str(tmp_path / "environment" / "pixi.toml"),
+            "python",
+            "app.py",
+        ]
+        assert mock_popen.call_args.kwargs["cwd"] == tmp_path
+        assert mock_popen.call_args.kwargs["env"]["HTTPS_PROXY"] == "https://proxy:8080"
+
+
+def test_pixi_config_is_translated_to_environment_spec(tmp_path):
+    """Pixi base dependencies and selected features should survive the Wetlands 2 migration."""
+    config_path = tmp_path / "pyproject.toml"
+    config_path.write_text(
+        "[project]\nname = 'demo'\n"
+        "[tool.pixi.workspace]\nchannels = ['conda-forge', 'pytorch']\n"
+        "[tool.pixi.dependencies]\npython = '3.12.*'\nnumpy = '>=2'\n"
+        "[tool.pixi.pypi-dependencies]\nrequests = '>=2.32'\n"
+        "[tool.pixi.feature.desktop.pypi-dependencies]\npyside6 = '>=6.8'\n"
+    )
+
+    spec = _environment_spec_from_config(
+        config_path,
+        environment_name="demo",
+        optional_dependencies=["desktop"],
+        local_packages=(),
+    )
+
+    assert spec.python == "3.12.*"
+    assert spec.conda == ("numpy>=2",)
+    assert spec.pypi == ("requests>=2.32", "pyside6>=6.8")
+    assert spec.channels == ("conda-forge", "pytorch")
+
+
+def test_uv_local_sources_become_immutable_local_packages(tmp_path):
+    """Local uv sources should keep working after Wetlands removed dependency dictionaries."""
+    local_package = tmp_path / "packages" / "my-core"
+    local_package.mkdir(parents=True)
+    (local_package / "pyproject.toml").write_text("[project]\nname = 'my-core'\nversion = '1.0.0'\n")
+    project = tmp_path / "backend"
+    project.mkdir()
+    config_path = project / "pyproject.toml"
+    config_path.write_text(
+        "[project]\nname = 'demo'\ndependencies = ['my-core', 'requests>=2']\n"
+        "[tool.uv.sources]\nmy-core = { path = '../packages/my-core', editable = true }\n"
+    )
+
+    spec = _environment_spec_from_config(
+        config_path,
+        environment_name="demo",
+        optional_dependencies=[],
+        local_packages=(),
+    )
+
+    assert spec.pypi == ("requests>=2",)
+    assert len(spec.local) == 1
+    assert spec.local[0].distribution_name == "my-core"
+    assert spec.local[0].editable is False
+    assert spec.local[0].content_identity is not None
 
 
 class TestDependencyHash:

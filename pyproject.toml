@@ -1,17 +1,18 @@
 [project]
 name = "wetlands-launcher"
-version = "0.3.7"
+version = "0.3.8"
 description = "Auto-updating application launcher with Python environment management"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "cryptography>=42.0",
     "keyring>=24.0",
+    "packaging>=24.0",
     "pyyaml>=6.0",
     "requests>=2.31",
     "toml>=0.10",
     "typing-extensions>=4.0",
-    "wetlands>=1.1.6",
+    "wetlands>=2.3.3",
 ]
 
 [dependency-groups]
@@ -47,6 +48,14 @@ line-length = 130
 
 [tool.hatch.build.targets.wheel]
 packages = ["launcher"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.claude",
+    "/.vscode",
+    "/.worktrees",
+    "/dist",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "assets/launcher.svg" = "assets/launcher.svg"

@@ -208,27 +208,23 @@ This launcher will:
 
 ## Python environment management
 
-The Wetlands library will be used to set up the python environment, and execute commands in this environment. Conda / mamba / micromamba will NOT be used directly.
+Wetlands 2 is used to provision the Python environment from an immutable `EnvironmentSpec`.
+After provisioning, Launcher uses the managed environment's public Pixi executable and manifest paths to start install scripts and application commands with `pixi run`.
+Conda, mamba, and micromamba are not used directly.
 
 The following enables to create a python environment with Wetlands:
 ```python
-from wetlands.environment_manager import EnvironmentManager
+from wetlands import EnvironmentManager, EnvironmentSpec
 
 logging.basicConfig(level=logging.INFO)
 
-# Initialize the environment manager (will download and install pixi at `pixi/`)
-environmentManager = EnvironmentManager()
+# Initialize the manager, then provision or reuse the declared recipe.
+environment_manager = EnvironmentManager(root="wetlands")
+spec = EnvironmentSpec(pypi=("numpy==2.2.4",))
+environment = environment_manager.provision("numpy-env", spec).wait_for()
 
-# Create and launch a Conda environment named "numpy_env"
-env = environmentManager.create("numpy_env", {"pip": ["numpy==2.2.4"]})
-
-# Alternatively, it is possible to provide a pyproject.toml file:
-# env = environmentManager.createFromConfig("numpy_env", "path/to/pyproject.toml")
-
-# This will be executed in the environment, by creating a bash or powershell script which activates the env and executes the commands
-env.execute_commands(["python downloaded_sources/install.py"])
-# Or to launch the app
-# env.execute_commands(["python downloaded_sources/main.py"])
+# Launcher translates supported dependency configuration files into EnvironmentSpec,
+# then starts ordinary application processes with the environment's Pixi manifest.
 ```
 
 For information purpose, the wetlands library is symlkinked at the root : you can check `./wetlands/docs/`, `./wetlands/examples/` or `./wetlands/src/` to know more about Wetlands.

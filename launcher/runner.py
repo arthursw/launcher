@@ -1,13 +1,13 @@
 """Script execution and initialization monitoring."""
 
 import logging
-import shlex
+from pathlib import Path
 import subprocess
 import threading
 import time
 from typing import Callable, Optional
 
-from wetlands.environment import Environment
+from wetlands import ManagedEnvironment
 
 from .config import AppConfig
 from .environment import LauncherEnvironmentManager
@@ -37,7 +37,7 @@ class ScriptRunner:
         self,
         config: AppConfig,
         env_manager: LauncherEnvironmentManager,
-        env: Environment,
+        env: ManagedEnvironment,
     ) -> None:
         """Initialize the script runner.
 
@@ -50,9 +50,9 @@ class ScriptRunner:
         self.env_manager = env_manager
         self.env = env
         self._process: Optional[subprocess.Popen] = None
-        self._process_logger = None
         self._output_lines: list[str] = []
-        self._lock = threading.Lock()
+        self._output_condition = threading.Condition()
+        self._reader_thread: Optional[threading.Thread] = None
 
     def run_install_script(self) -> bool:
         """Run the install script if defined.
@@ -71,11 +71,19 @@ class ScriptRunner:
 
         logger.info(f"Running install script: {install_path}")
         try:
-            # Use env.execute_commands as per specs.md
-            process = self.env.execute_commands(
-                commands=[f'python "{install_path}"'],
-                wait=True,
+            process = self.env_manager.execute_command(
+                self.env,
+                ["python", str(install_path)],
+                cwd=self.config.working_directory_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
+            output, _ = process.communicate()
+            if output:
+                with self._output_condition:
+                    self._output_lines.extend(output.splitlines())
+                    self._output_condition.notify_all()
 
             if process.returncode != 0:
                 logger.error(f"Install script failed with return code {process.returncode}")
@@ -118,26 +126,55 @@ class ScriptRunner:
                 "sources directory when `configuration: null`."
             )
 
-        def on_output(line: str, _context: dict) -> None:
-            with self._lock:
-                self._output_lines.append(line)
-            if output_callback:
-                output_callback(line)
-
-        self._process = self.env.execute_commands(
-            commands=[command],
-            popen_kwargs=self._launch_popen_kwargs(),
-            wait=False,
+        output_path = self._application_output_path()
+        with output_path.open("w", encoding="utf-8", buffering=1) as output_file:
+            self._process = self.env_manager.execute_command(
+                self.env,
+                command,
+                cwd=working_directory,
+                stdout=output_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        self._reader_thread = threading.Thread(
+            target=self._capture_output_file,
+            args=(output_path, self._process, output_callback),
+            name=f"launcher-output-{self.config.env_name}",
+            daemon=True,
         )
-
-        # Subscribe to process output using ProcessLogger
-        self._process_logger = self.env_manager.get_process_logger(self._process)
-        if self._process_logger:
-            self._process_logger.subscribe(on_output, include_history=False)
+        self._reader_thread.start()
 
         return self._process
 
-    def _script_command(self) -> str:
+    def _application_output_path(self) -> Path:
+        runtime_dir = get_runtime_data_dir(self.config.name)
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        return runtime_dir / "launcher-app.log"
+
+    def _capture_output_file(
+        self,
+        output_path: Path,
+        process: subprocess.Popen,
+        output_callback: Optional[OutputCallback],
+    ) -> None:
+        with output_path.open("r", encoding="utf-8", errors="replace") as output:
+            while True:
+                raw_line = output.readline()
+                if raw_line:
+                    line = raw_line.rstrip("\r\n")
+                    with self._output_condition:
+                        self._output_lines.append(line)
+                        self._output_condition.notify_all()
+                    if output_callback:
+                        output_callback(line)
+                    continue
+                if process.poll() is not None:
+                    break
+                time.sleep(0.05)
+        with self._output_condition:
+            self._output_condition.notify_all()
+
+    def _script_command(self) -> list[str]:
         script_path = self.config.script_path
         if script_path is None:
             raise RunnerError("Script entrypoint is not configured")
@@ -151,22 +188,17 @@ class ScriptRunner:
                 "to the Python file that starts your app, or include that file in "
                 "the release archive."
             )
-        return f'python -u "{self._write_script_bootstrap(script_path)}"'
+        return ["python", "-u", self._write_script_bootstrap(script_path)]
 
-    def _module_command(self) -> str:
+    def _module_command(self) -> list[str]:
         if not self.config.entrypoint.module:
             raise RunnerError("Module entrypoint is not configured")
-        return f'python -u "{self._write_module_bootstrap()}"'
+        return ["python", "-u", self._write_module_bootstrap()]
 
-    def _project_command(self) -> str:
+    def _project_command(self) -> list[str]:
         if not self.config.entrypoint.command:
             raise RunnerError("Project command entrypoint is not configured")
-        return shlex.join([self.config.entrypoint.command, *self.config.entrypoint.args])
-
-    def _launch_popen_kwargs(self) -> dict:
-        return {
-            "cwd": self.config.working_directory_path,
-        }
+        return [self.config.entrypoint.command, *self.config.entrypoint.args]
 
     def _write_script_bootstrap(self, script_path) -> str:
         runtime_dir = get_runtime_data_dir(self.config.name)
@@ -250,7 +282,7 @@ class ScriptRunner:
 
     def recent_output(self, max_lines: int = 20) -> str:
         """Return recent captured app output."""
-        with self._lock:
+        with self._output_condition:
             return "\n".join(self._output_lines[-max_lines:])
 
     def wait_for_init(
@@ -274,30 +306,35 @@ class ScriptRunner:
             logger.info("No init message configured, skipping wait")
             return True
 
-        if not self._process_logger:
-            logger.warning("No process logger available, cannot wait for init message")
+        if not self._process:
+            logger.warning("Application process was not started, cannot wait for init message")
             return False
 
         timeout = self.config.init_timeout
         init_message = self.config.init_message
-
-        def init_predicate(line: str) -> bool:
-            return init_message in line
+        next_line = 0
 
         while True:
-            line = self._process_logger.wait_for_line(init_predicate, timeout=timeout)
-            if line:
-                logger.info(f"Init message received: {init_message}")
-                return True
+            deadline = time.monotonic() + timeout
+            while True:
+                with self._output_condition:
+                    new_lines = self._output_lines[next_line:]
+                    next_line = len(self._output_lines)
+                    if any(init_message in line for line in new_lines):
+                        logger.info(f"Init message received: {init_message}")
+                        return True
 
-            # Check if process has exited
-            if self._process and self._process.poll() is not None:
-                logger.error(f"Process exited with code {self._process.returncode} before init message")
-                raise InitTimeoutError(
-                    f"Process exited (code {self._process.returncode}) before init message was received"
-                )
+                    if self._process.poll() is not None:
+                        logger.error(f"Process exited with code {self._process.returncode} before init message")
+                        raise InitTimeoutError(
+                            f"Process exited (code {self._process.returncode}) before init message was received"
+                        )
 
-            # Timeout occurred
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._output_condition.wait(min(remaining, 0.1))
+
             logger.warning(f"Init message not received within {timeout} seconds")
 
             if timeout_callback:
@@ -328,6 +365,9 @@ class ScriptRunner:
             except subprocess.TimeoutExpired:
                 logger.warning("Process did not terminate, killing")
                 self._process.kill()
+            if self._reader_thread:
+                self._reader_thread.join(timeout=1)
+                self._reader_thread = None
             self._process = None
 
     @property
@@ -345,5 +385,5 @@ class ScriptRunner:
     @property
     def output_lines(self) -> list[str]:
         """Get all captured output lines."""
-        with self._lock:
+        with self._output_condition:
             return self._output_lines.copy()

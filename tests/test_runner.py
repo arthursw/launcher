@@ -1,5 +1,7 @@
 """Tests for script runner errors."""
 
+import subprocess
+import sys
 from unittest.mock import MagicMock
 
 from launcher.config import AppConfig, EntryPointConfig
@@ -52,20 +54,20 @@ def test_start_uses_inferred_working_directory_and_pythonpath(tmp_path):
     )
     process = MagicMock()
     env = MagicMock()
-    env.execute_commands.return_value = process
     env_manager = MagicMock()
-    env_manager.get_process_logger.return_value = None
+    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     assert runner.start() == process
 
-    env.execute_commands.assert_called_once()
-    call = env.execute_commands.call_args
+    env_manager.execute_command.assert_called_once()
+    call = env_manager.execute_command.call_args
     bootstrap_path = get_runtime_data_dir("MyApp") / "launcher-run.py"
-    assert call.kwargs["commands"] == [f'python -u "{bootstrap_path}"']
-    assert call.kwargs["wait"] is False
-    assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "backend"
-    assert "env" not in call.kwargs["popen_kwargs"]
+    assert call.args == (env, ["python", "-u", str(bootstrap_path)])
+    assert call.kwargs["cwd"] == app_sources / "backend"
+    assert call.kwargs["stderr"] is subprocess.STDOUT
+    assert call.kwargs["stdout"].name == str(get_runtime_data_dir("MyApp") / "launcher-app.log")
+    assert call.kwargs["stdout"].closed is True
     bootstrap = bootstrap_path.read_text()
     assert repr(str(app_sources / "backend" / "src")) in bootstrap
     assert repr(str(app_sources / "backend")) in bootstrap
@@ -93,18 +95,16 @@ def test_start_uses_explicit_working_directory_and_pythonpath(tmp_path):
     )
     process = MagicMock()
     env = MagicMock()
-    env.execute_commands.return_value = process
     env_manager = MagicMock()
-    env_manager.get_process_logger.return_value = None
+    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     runner.start()
 
-    call = env.execute_commands.call_args
+    call = env_manager.execute_command.call_args
     bootstrap_path = get_runtime_data_dir("MyApp") / "launcher-run.py"
-    assert call.kwargs["commands"] == [f'python -u "{bootstrap_path}"']
-    assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "runtime"
-    assert "env" not in call.kwargs["popen_kwargs"]
+    assert call.args == (env, ["python", "-u", str(bootstrap_path)])
+    assert call.kwargs["cwd"] == app_sources / "runtime"
     bootstrap = bootstrap_path.read_text()
     assert repr(str(app_sources / "lib")) in bootstrap
     assert repr(str(app_sources / "plugins")) in bootstrap
@@ -131,17 +131,16 @@ def test_start_module_entrypoint_uses_run_module_and_args(tmp_path):
     )
     process = MagicMock()
     env = MagicMock()
-    env.execute_commands.return_value = process
     env_manager = MagicMock()
-    env_manager.get_process_logger.return_value = None
+    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     runner.start()
 
-    call = env.execute_commands.call_args
+    call = env_manager.execute_command.call_args
     bootstrap_path = get_runtime_data_dir("MyApp") / "launcher-run.py"
-    assert call.kwargs["commands"] == [f'python -u "{bootstrap_path}"']
-    assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "backend"
+    assert call.args == (env, ["python", "-u", str(bootstrap_path)])
+    assert call.kwargs["cwd"] == app_sources / "backend"
     bootstrap = bootstrap_path.read_text()
     assert repr(str(app_sources / "backend" / "src")) in bootstrap
     assert "runpy.run_module('my_app', run_name='__main__', alter_sys=True)" in bootstrap
@@ -168,16 +167,15 @@ def test_start_project_entrypoint_runs_installed_command(tmp_path):
     )
     process = MagicMock()
     env = MagicMock()
-    env.execute_commands.return_value = process
     env_manager = MagicMock()
-    env_manager.get_process_logger.return_value = None
+    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     runner.start()
 
-    call = env.execute_commands.call_args
-    assert call.kwargs["commands"] == ["my-app-gui --port 8765"]
-    assert call.kwargs["popen_kwargs"]["cwd"] == app_sources / "backend"
+    call = env_manager.execute_command.call_args
+    assert call.args == (env, ["my-app-gui", "--port", "8765"])
+    assert call.kwargs["cwd"] == app_sources / "backend"
 
 
 def test_ensure_still_running_rejects_immediate_exit(tmp_path):
@@ -230,3 +228,30 @@ def test_ensure_still_running_accepts_running_process(tmp_path):
     runner._process = process
 
     runner.ensure_still_running(grace_seconds=0)
+
+
+def test_wait_for_init_reads_combined_process_output(tmp_path):
+    """Launcher-owned output capture should detect an initialization message."""
+    config = AppConfig(
+        name="MyApp",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
+        path=str(tmp_path),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+        init_message="READY",
+        init_timeout=0.5,
+    )
+    runner = ScriptRunner(config, env_manager=MagicMock(), env=MagicMock())
+    output_path = tmp_path / "app.log"
+    with output_path.open("w", encoding="utf-8") as output:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "print('READY')"],
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        runner._process = process
+        runner._capture_output_file(output_path, process, None)
+
+    assert runner.wait_for_init() is True
+    assert runner.output_lines == ["READY"]
