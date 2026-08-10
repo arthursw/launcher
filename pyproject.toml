@@ -1,6 +1,6 @@
 [project]
 name = "wetlands-launcher"
-version = "0.3.8"
+version = "0.3.9"
 description = "Auto-updating application launcher with Python environment management"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ dependencies = [
     "requests>=2.31",
     "toml>=0.10",
     "typing-extensions>=4.0",
-    "wetlands>=2.3.3",
+    "wetlands>=2.4.0",
 ]
 
 [dependency-groups]

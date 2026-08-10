@@ -117,6 +117,13 @@ class LauncherWorker:
         logger.info(message)
         self._send_event(WorkerEvent(type=EventType.LOG, message=message))
 
+    def _log_application_output(self, line: str) -> None:
+        """Log application output without growing an unused queue after startup."""
+        message = f"[app] {line}"
+        logger.info(message)
+        if not self._completed:
+            self._send_event(WorkerEvent(type=EventType.LOG, message=message))
+
     def _progress(self, current: int, total: int, message: str) -> None:
         """Send a progress event."""
         self._send_event(WorkerEvent(
@@ -480,9 +487,7 @@ class LauncherWorker:
 
             # Start the configured entrypoint
             self._log("Starting application...")
-            process = self._runner.start(
-                output_callback=lambda line: self._log(f"[app] {line}")
-            )
+            process = self._runner.start(output_callback=self._log_application_output)
             process_id = getattr(process, "pid", None)
             if process_id:
                 self._log(f"Application process started with PID {process_id}")
@@ -508,11 +513,15 @@ class LauncherWorker:
                         raise
             else:
                 self._runner.ensure_still_running()
-                self._log("No init_message configured; launcher will exit and leave the application running.")
+                self._log("No init_message configured; application startup was verified.")
 
             # Complete
             self._completed = True
             self._send_event(WorkerEvent(type=EventType.COMPLETE))
+            self._log("Launcher will remain active to supervise the application process.")
+            return_code = self._runner.wait_for_exit()
+            self._log(f"Application process exited with code {return_code}")
+            self._env_manager.exit()
 
         except FileNotFoundError as e:
             self._error(f"Configuration not found: {e}")
@@ -556,12 +565,25 @@ class LauncherWorker:
 
     def stop(self) -> None:
         """Stop the worker thread."""
+        if self._completed:
+            if self._thread:
+                try:
+                    self._thread.join()
+                except KeyboardInterrupt:
+                    self._stop_event.set()
+                    if self._runner:
+                        self._runner.stop()
+                    if self._env_manager:
+                        self._env_manager.exit()
+                    self._thread.join(timeout=5)
+            return
+
         self._stop_event.set()
 
-        if self._runner and not self._completed:
+        if self._runner:
             self._runner.stop()
 
-        if self._env_manager and not self._completed:
+        if self._env_manager:
             self._env_manager.exit()
 
         if self._thread:
@@ -573,7 +595,7 @@ class LauncherWorker:
 
     @property
     def completed(self) -> bool:
-        """Whether the launcher completed and transferred ownership to the app."""
+        """Whether application startup completed successfully."""
         return self._completed
 
     @property

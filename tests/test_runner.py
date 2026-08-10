@@ -1,12 +1,25 @@
 """Tests for script runner errors."""
 
-import subprocess
-import sys
+import asyncio
 from unittest.mock import MagicMock
+
+import pytest
+from wetlands import ManagedProcessResult, OutputEvent, OutputStream, ProcessError
 
 from launcher.config import AppConfig, EntryPointConfig
 from launcher.paths import get_runtime_data_dir
-from launcher.runner import RunnerError, ScriptRunner
+from launcher.runner import MANAGED_PROCESS_OUTPUT_LIMIT, InitTimeoutError, RunnerError, ScriptRunner
+
+
+async def _no_output_events():
+    if False:
+        yield None
+
+
+def _managed_process_mock() -> MagicMock:
+    process = MagicMock()
+    process.events.return_value = _no_output_events()
+    return process
 
 
 def test_start_missing_script_entrypoint_explains_config_and_archive(tmp_path):
@@ -52,22 +65,20 @@ def test_start_uses_inferred_working_directory_and_pythonpath(tmp_path):
         version="v1.2.3",
         configuration="backend/pyproject.toml",
     )
-    process = MagicMock()
+    process = _managed_process_mock()
     env = MagicMock()
+    env.spawn.return_value = process
     env_manager = MagicMock()
-    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     assert runner.start() == process
 
-    env_manager.execute_command.assert_called_once()
-    call = env_manager.execute_command.call_args
+    env.spawn.assert_called_once()
+    call = env.spawn.call_args
     bootstrap_path = get_runtime_data_dir("MyApp") / "launcher-run.py"
-    assert call.args == (env, ["python", "-u", str(bootstrap_path)])
+    assert call.args == (["python", "-u", str(bootstrap_path)],)
     assert call.kwargs["cwd"] == app_sources / "backend"
-    assert call.kwargs["stderr"] is subprocess.STDOUT
-    assert call.kwargs["stdout"].name == str(get_runtime_data_dir("MyApp") / "launcher-app.log")
-    assert call.kwargs["stdout"].closed is True
+    assert call.kwargs["output_limit"] == MANAGED_PROCESS_OUTPUT_LIMIT
     bootstrap = bootstrap_path.read_text()
     assert repr(str(app_sources / "backend" / "src")) in bootstrap
     assert repr(str(app_sources / "backend")) in bootstrap
@@ -93,17 +104,17 @@ def test_start_uses_explicit_working_directory_and_pythonpath(tmp_path):
         working_directory="runtime",
         pythonpath=["lib", "plugins"],
     )
-    process = MagicMock()
+    process = _managed_process_mock()
     env = MagicMock()
+    env.spawn.return_value = process
     env_manager = MagicMock()
-    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     runner.start()
 
-    call = env_manager.execute_command.call_args
+    call = env.spawn.call_args
     bootstrap_path = get_runtime_data_dir("MyApp") / "launcher-run.py"
-    assert call.args == (env, ["python", "-u", str(bootstrap_path)])
+    assert call.args == (["python", "-u", str(bootstrap_path)],)
     assert call.kwargs["cwd"] == app_sources / "runtime"
     bootstrap = bootstrap_path.read_text()
     assert repr(str(app_sources / "lib")) in bootstrap
@@ -129,17 +140,17 @@ def test_start_module_entrypoint_uses_run_module_and_args(tmp_path):
         version="v1.2.3",
         configuration="backend/pyproject.toml",
     )
-    process = MagicMock()
+    process = _managed_process_mock()
     env = MagicMock()
+    env.spawn.return_value = process
     env_manager = MagicMock()
-    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     runner.start()
 
-    call = env_manager.execute_command.call_args
+    call = env.spawn.call_args
     bootstrap_path = get_runtime_data_dir("MyApp") / "launcher-run.py"
-    assert call.args == (env, ["python", "-u", str(bootstrap_path)])
+    assert call.args == (["python", "-u", str(bootstrap_path)],)
     assert call.kwargs["cwd"] == app_sources / "backend"
     bootstrap = bootstrap_path.read_text()
     assert repr(str(app_sources / "backend" / "src")) in bootstrap
@@ -165,16 +176,16 @@ def test_start_project_entrypoint_runs_installed_command(tmp_path):
         version="v1.2.3",
         configuration="backend/pyproject.toml",
     )
-    process = MagicMock()
+    process = _managed_process_mock()
     env = MagicMock()
+    env.spawn.return_value = process
     env_manager = MagicMock()
-    env_manager.execute_command.return_value = process
     runner = ScriptRunner(config, env_manager=env_manager, env=env)
 
     runner.start()
 
-    call = env_manager.execute_command.call_args
-    assert call.args == (env, ["my-app-gui", "--port", "8765"])
+    call = env.spawn.call_args
+    assert call.args == (["my-app-gui", "--port", "8765"],)
     assert call.kwargs["cwd"] == app_sources / "backend"
 
 
@@ -194,7 +205,15 @@ def test_ensure_still_running_rejects_immediate_exit(tmp_path):
     )
     runner = ScriptRunner(config, env_manager=None, env=None)  # type: ignore[arg-type]
     process = MagicMock()
-    process.poll.return_value = 2
+    process.returncode = 2
+    process.wait.return_value = ManagedProcessResult(
+        argv=("python", "main.py"),
+        returncode=2,
+        stdout="Traceback\nboom\n",
+        stderr="",
+        started_at=1.0,
+        ended_at=2.0,
+    )
     runner._process = process
     runner._output_lines = ["Traceback", "boom"]
 
@@ -214,7 +233,7 @@ def test_ensure_still_running_rejects_immediate_exit(tmp_path):
 
 
 def test_ensure_still_running_accepts_running_process(tmp_path):
-    """A process still running after the grace period is a successful handoff."""
+    """A process still running after the grace period has started successfully."""
     config = AppConfig(
         name="MyApp",
         entrypoint=EntryPointConfig(mode="script", script="main.py"),
@@ -224,14 +243,14 @@ def test_ensure_still_running_accepts_running_process(tmp_path):
     )
     runner = ScriptRunner(config, env_manager=None, env=None)  # type: ignore[arg-type]
     process = MagicMock()
-    process.poll.return_value = None
+    process.returncode = None
     runner._process = process
 
     runner.ensure_still_running(grace_seconds=0)
 
 
-def test_wait_for_init_reads_combined_process_output(tmp_path):
-    """Launcher-owned output capture should detect an initialization message."""
+def test_wait_for_init_uses_managed_process_output(tmp_path):
+    """Wetlands managed output should detect an initialization message."""
     config = AppConfig(
         name="MyApp",
         entrypoint=EntryPointConfig(mode="script", script="main.py"),
@@ -242,16 +261,153 @@ def test_wait_for_init_reads_combined_process_output(tmp_path):
         init_timeout=0.5,
     )
     runner = ScriptRunner(config, env_manager=MagicMock(), env=MagicMock())
-    output_path = tmp_path / "app.log"
-    with output_path.open("w", encoding="utf-8") as output:
-        process = subprocess.Popen(
-            [sys.executable, "-c", "print('READY')"],
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        runner._process = process
-        runner._capture_output_file(output_path, process, None)
+    process = MagicMock()
+    process.wait_for_line.return_value = OutputEvent(0, 1.0, OutputStream.STDOUT, "READY\n")
+    runner._process = process
 
     assert runner.wait_for_init() is True
-    assert runner.output_lines == ["READY"]
+    process.wait_for_line.assert_called_once()
+    assert process.wait_for_line.call_args.kwargs["timeout"] == 0.5
+
+
+def test_wait_for_init_translates_terminal_process_errors(tmp_path):
+    """Wetlands terminal errors should remain actionable launcher errors."""
+    config = AppConfig(
+        name="MyApp",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
+        path=str(tmp_path),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+        init_message="READY",
+        init_timeout=1,
+    )
+    runner = ScriptRunner(config, env_manager=MagicMock(), env=MagicMock())
+    process = MagicMock()
+    process.wait_for_line.side_effect = EOFError
+    process.wait.side_effect = ProcessError(
+        "output limit exceeded",
+        argv=("python", "main.py"),
+        environment="my-app",
+        generation_id="generation-1",
+    )
+    runner._process = process
+
+    with pytest.raises(InitTimeoutError, match="failed before initialization completed"):
+        runner.wait_for_init()
+
+
+def test_managed_output_events_preserve_stderr_and_write_log(tmp_path):
+    """Managed stdout and stderr events should remain distinguishable in launcher logs."""
+    config = AppConfig(
+        name="MyApp",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
+        path=str(tmp_path),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+    )
+    runner = ScriptRunner(config, env_manager=MagicMock(), env=MagicMock())
+    process = MagicMock()
+
+    async def events():
+        yield OutputEvent(0, 1.0, OutputStream.STDOUT, "ready\n")
+        yield OutputEvent(1, 2.0, OutputStream.STDERR, "warning\n")
+
+    process.events.return_value = events()
+    output_path = tmp_path / "app.log"
+    callbacks = []
+
+    asyncio.run(runner._consume_output_events(output_path, process, callbacks.append))
+
+    assert runner.output_lines == ["ready", "[stderr] warning"]
+    assert callbacks == ["ready", "[stderr] warning"]
+    assert output_path.read_text() == "ready\n[stderr] warning\n"
+
+
+def test_run_install_script_uses_managed_environment(tmp_path):
+    """Install scripts should run to completion through Wetlands."""
+    sources = tmp_path / "sources" / "testapp-v1.0.0"
+    sources.mkdir(parents=True)
+    install_script = sources / "install.py"
+    install_script.write_text("print('installed')")
+    config = AppConfig(
+        name="TestApp",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
+        path=str(tmp_path),
+        repository="https://github.com/my-org/testapp.git",
+        version="v1.0.0",
+        configuration=None,
+        install="install.py",
+    )
+    result = ManagedProcessResult(
+        argv=("python", str(install_script)),
+        returncode=0,
+        stdout="installed\n",
+        stderr="",
+        started_at=1.0,
+        ended_at=2.0,
+    )
+    environment = MagicMock()
+    environment.run.return_value = result
+    runner = ScriptRunner(config, env_manager=MagicMock(), env=environment)
+
+    assert runner.run_install_script() is True
+    environment.run.assert_called_once_with(
+        ["python", str(install_script)],
+        cwd=config.working_directory_path,
+        output_limit=MANAGED_PROCESS_OUTPUT_LIMIT,
+        check=False,
+    )
+    assert runner.output_lines == ["installed"]
+
+
+def test_wait_for_exit_releases_the_managed_process(tmp_path):
+    """Natural application exit should complete Wetlands cleanup."""
+    config = AppConfig(
+        name="MyApp",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
+        path=str(tmp_path),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+    )
+    result = ManagedProcessResult(
+        argv=("python", "main.py"),
+        returncode=0,
+        stdout="",
+        stderr="",
+        started_at=1.0,
+        ended_at=2.0,
+    )
+    process = MagicMock()
+    process.wait.return_value = result
+    runner = ScriptRunner(config, env_manager=MagicMock(), env=MagicMock())
+    runner._process = process
+
+    assert runner.wait_for_exit() == 0
+    process.wait.assert_called_once_with(check=False)
+    process.close.assert_called_once_with()
+    assert runner._process is None
+
+
+def test_stop_retains_process_when_cleanup_can_be_retried(tmp_path):
+    """A Wetlands cleanup error should leave the process available for retry."""
+    config = AppConfig(
+        name="MyApp",
+        entrypoint=EntryPointConfig(mode="script", script="main.py"),
+        path=str(tmp_path),
+        repository="https://github.com/my-org/myapp.git",
+        version="v1.2.3",
+    )
+    process = MagicMock()
+    process.close.side_effect = ProcessError(
+        "cleanup failed",
+        argv=("python", "main.py"),
+        environment="my-app",
+        generation_id="generation-1",
+    )
+    runner = ScriptRunner(config, env_manager=MagicMock(), env=MagicMock())
+    runner._process = process
+
+    with pytest.raises(RunnerError, match="Failed to clean up application process"):
+        runner.stop()
+
+    assert runner._process is process

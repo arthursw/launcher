@@ -209,7 +209,8 @@ This launcher will:
 ## Python environment management
 
 Wetlands 2 is used to provision the Python environment from an immutable `EnvironmentSpec`.
-After provisioning, Launcher uses the managed environment's public Pixi executable and manifest paths to start install scripts and application commands with `pixi run`.
+After provisioning, Launcher uses `ManagedEnvironment.run()` for install scripts and `ManagedEnvironment.spawn()` for the application process.
+Launcher remains active while the application runs so Wetlands can supervise the exact environment generation and clean up the full process tree.
 Conda, mamba, and micromamba are not used directly.
 
 The following enables to create a python environment with Wetlands:
@@ -224,7 +225,7 @@ spec = EnvironmentSpec(pypi=("numpy==2.2.4",))
 environment = environment_manager.provision("numpy-env", spec).wait_for()
 
 # Launcher translates supported dependency configuration files into EnvironmentSpec,
-# then starts ordinary application processes with the environment's Pixi manifest.
+# then uses environment.run(...) or environment.spawn(...) for managed commands.
 ```
 
 For information purpose, the wetlands library is symlkinked at the root : you can check `./wetlands/docs/`, `./wetlands/examples/` or `./wetlands/src/` to know more about Wetlands.

@@ -4,9 +4,8 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-import subprocess
 import tomllib
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 from urllib.parse import unquote, urlparse
 
 from packaging.requirements import InvalidRequirement, Requirement
@@ -243,37 +242,6 @@ class LauncherEnvironmentManager:
             os.environ["SSL_CERT_FILE"] = ssl_cert_file
             os.environ["REQUESTS_CA_BUNDLE"] = ssl_cert_file
             logger.info(f"SSL certificate env vars set to: {ssl_cert_file}")
-
-    def execute_command(
-        self,
-        environment: ManagedEnvironment,
-        command: list[str],
-        *,
-        cwd: Optional[Path] = None,
-        **popen_kwargs: Any,
-    ) -> subprocess.Popen:
-        """Start an argv command in a provisioned Wetlands Pixi environment."""
-        child_environment = os.environ.copy()
-        child_environment.update(
-            {
-                "PIXI_HOME": str(self._manager.state_root / "pixi-home"),
-                "PIXI_CACHE_DIR": str(self._manager.state_root / "pixi-cache"),
-            }
-        )
-        child_environment.update(
-            {
-                "NO_PROXY" if scheme == "no_proxy" else f"{scheme.upper()}_PROXY": value
-                for scheme, value in (self._manager.network or {}).items()
-            }
-        )
-        argv = [
-            str(environment.pixi_executable_path),
-            "run",
-            "--manifest-path",
-            str(environment.pixi_manifest_path),
-            *command,
-        ]
-        return subprocess.Popen(argv, cwd=cwd, env=child_environment, **popen_kwargs)
 
     def exit(self) -> None:
         """Clean up and exit all environments."""

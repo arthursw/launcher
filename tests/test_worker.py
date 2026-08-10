@@ -239,8 +239,8 @@ class TestLauncherWorker:
         error_events = [e for e in events if e.type == EventType.ERROR]
         assert len(error_events) > 0
 
-    def test_stop_after_success_does_not_terminate_child_or_env(self, mock_config_file, queues):
-        """Successful initialization transfers process ownership to the app."""
+    def test_stop_after_success_leaves_lifecycle_with_worker_thread(self, mock_config_file, queues):
+        """The supervising worker owns cleanup after successful initialization."""
         event_queue, response_queue = queues
         worker = LauncherWorker(mock_config_file, event_queue, response_queue)
         worker._completed = True
@@ -263,6 +263,18 @@ class TestLauncherWorker:
 
         worker._runner.stop.assert_called_once()
         worker._env_manager.exit.assert_called_once()
+
+    def test_application_output_stops_enqueuing_after_startup(self, mock_config_file, queues):
+        """Long-running applications should not grow an unobserved GUI queue."""
+        event_queue, response_queue = queues
+        worker = LauncherWorker(mock_config_file, event_queue, response_queue)
+
+        worker._log_application_output("starting")
+        assert event_queue.get_nowait().message == "[app] starting"
+
+        worker._completed = True
+        worker._log_application_output("still running")
+        assert event_queue.empty()
 
     def test_http_status_error_does_not_request_proxy(self, mock_config_file, queues):
         """HTTP 404/401-style update errors should not trigger proxy fallback."""
@@ -446,7 +458,7 @@ class TestLauncherWorker:
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')
     @patch('launcher.worker.ScriptRunner')
-    def test_worker_logs_process_handoff_without_init_message(
+    def test_worker_logs_process_supervision_without_init_message(
         self,
         mock_runner_class,
         mock_update_sources,
@@ -454,7 +466,7 @@ class TestLauncherWorker:
         mock_config_file,
         queues,
     ):
-        """When no init_message is configured, Launcher should explain the handoff."""
+        """When no init_message is configured, Launcher should explain supervision."""
         event_queue, response_queue = queues
         mock_update_sources.return_value = (False, "testapp-v1.0.0")
         mock_env_instance = MagicMock()
@@ -485,12 +497,14 @@ class TestLauncherWorker:
                 complete = True
 
         assert "Application process started with PID 12345" in logs
-        assert "No init_message configured; launcher will exit and leave the application running." in logs
+        assert "No init_message configured; application startup was verified." in logs
+        assert "Launcher will remain active to supervise the application process." in logs
         assert complete is True
         mock_env_manager_class.assert_called_once_with(
             wetlands_path=mock_config_file.parent / "apps" / "wetlands"
         )
         mock_runner.ensure_still_running.assert_called_once()
+        mock_runner.wait_for_exit.assert_called_once_with()
 
     @patch('launcher.worker.LauncherEnvironmentManager')
     @patch('launcher.worker.update_sources')

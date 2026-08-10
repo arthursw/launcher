@@ -452,40 +452,6 @@ class TestLauncherEnvironmentManager:
 
         assert result is False
 
-    @patch('launcher.environment.subprocess.Popen')
-    @patch('launcher.environment.EnvironmentManager')
-    def test_execute_command_uses_managed_pixi_project(
-        self,
-        mock_env_manager_class,
-        mock_popen,
-        tmp_path,
-    ):
-        """Application commands should run through the public Wetlands Pixi paths."""
-        mock_instance = MagicMock()
-        mock_instance.state_root = tmp_path / "state"
-        mock_instance.network = {"https": "https://proxy:8080"}
-        mock_env_manager_class.return_value = mock_instance
-        environment = SimpleNamespace(
-            pixi_executable_path=tmp_path / "pixi",
-            pixi_manifest_path=tmp_path / "environment" / "pixi.toml",
-        )
-        manager = LauncherEnvironmentManager(wetlands_path=tmp_path / "wetlands")
-
-        manager.execute_command(environment, ["python", "app.py"], cwd=tmp_path)
-
-        argv = mock_popen.call_args.args[0]
-        assert argv == [
-            str(tmp_path / "pixi"),
-            "run",
-            "--manifest-path",
-            str(tmp_path / "environment" / "pixi.toml"),
-            "python",
-            "app.py",
-        ]
-        assert mock_popen.call_args.kwargs["cwd"] == tmp_path
-        assert mock_popen.call_args.kwargs["env"]["HTTPS_PROXY"] == "https://proxy:8080"
-
-
 def test_pixi_config_is_translated_to_environment_spec(tmp_path):
     """Pixi base dependencies and selected features should survive the Wetlands 2 migration."""
     config_path = tmp_path / "pyproject.toml"

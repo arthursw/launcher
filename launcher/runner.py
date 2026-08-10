@@ -1,13 +1,22 @@
 """Script execution and initialization monitoring."""
 
+import asyncio
 import logging
 from pathlib import Path
-import subprocess
 import threading
 import time
 from typing import Callable, Optional
 
-from wetlands import ManagedEnvironment
+from wetlands import (
+    ManagedEnvironment,
+    ManagedProcess,
+    ManagedProcessResult,
+    OutputEvent,
+    OutputStream,
+    ProcessError,
+    ProcessEventLagError,
+    ProcessLineTimeoutError,
+)
 
 from .config import AppConfig
 from .environment import LauncherEnvironmentManager
@@ -18,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Type aliases
 OutputCallback = Callable[[str], None]
 InitTimeoutCallback = Callable[[], str]  # Returns 'wait', 'reinstall', or 'exit'
+MANAGED_PROCESS_OUTPUT_LIMIT = 16 * 1024 * 1024
 
 
 class RunnerError(Exception):
@@ -49,7 +59,7 @@ class ScriptRunner:
         self.config = config
         self.env_manager = env_manager
         self.env = env
-        self._process: Optional[subprocess.Popen] = None
+        self._process: Optional[ManagedProcess] = None
         self._output_lines: list[str] = []
         self._output_condition = threading.Condition()
         self._reader_thread: Optional[threading.Thread] = None
@@ -71,22 +81,16 @@ class ScriptRunner:
 
         logger.info(f"Running install script: {install_path}")
         try:
-            process = self.env_manager.execute_command(
-                self.env,
+            result = self.env.run(
                 ["python", str(install_path)],
                 cwd=self.config.working_directory_path,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                output_limit=MANAGED_PROCESS_OUTPUT_LIMIT,
+                check=False,
             )
-            output, _ = process.communicate()
-            if output:
-                with self._output_condition:
-                    self._output_lines.extend(output.splitlines())
-                    self._output_condition.notify_all()
+            self._record_result_output(result)
 
-            if process.returncode != 0:
-                logger.error(f"Install script failed with return code {process.returncode}")
+            if result.returncode != 0:
+                logger.error(f"Install script failed with return code {result.returncode}")
                 return False
 
             logger.info("Install script completed successfully")
@@ -98,14 +102,14 @@ class ScriptRunner:
     def start(
         self,
         output_callback: Optional[OutputCallback] = None,
-    ) -> subprocess.Popen:
+    ) -> ManagedProcess:
         """Start the configured entrypoint.
 
         Args:
             output_callback: Optional callback for stdout lines
 
         Returns:
-            The subprocess.Popen instance
+            The Wetlands managed process
         """
         if self.config.entrypoint.mode == "script":
             command = self._script_command()
@@ -127,17 +131,13 @@ class ScriptRunner:
             )
 
         output_path = self._application_output_path()
-        with output_path.open("w", encoding="utf-8", buffering=1) as output_file:
-            self._process = self.env_manager.execute_command(
-                self.env,
-                command,
-                cwd=working_directory,
-                stdout=output_file,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+        self._process = self.env.spawn(
+            command,
+            cwd=working_directory,
+            output_limit=MANAGED_PROCESS_OUTPUT_LIMIT,
+        )
         self._reader_thread = threading.Thread(
-            target=self._capture_output_file,
+            target=self._capture_output_events,
             args=(output_path, self._process, output_callback),
             name=f"launcher-output-{self.config.env_name}",
             daemon=True,
@@ -151,28 +151,53 @@ class ScriptRunner:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         return runtime_dir / "launcher-app.log"
 
-    def _capture_output_file(
+    def _capture_output_events(
         self,
         output_path: Path,
-        process: subprocess.Popen,
+        process: ManagedProcess,
         output_callback: Optional[OutputCallback],
     ) -> None:
-        with output_path.open("r", encoding="utf-8", errors="replace") as output:
-            while True:
-                raw_line = output.readline()
-                if raw_line:
-                    line = raw_line.rstrip("\r\n")
-                    with self._output_condition:
-                        self._output_lines.append(line)
-                        self._output_condition.notify_all()
-                    if output_callback:
-                        output_callback(line)
-                    continue
-                if process.poll() is not None:
-                    break
-                time.sleep(0.05)
+        try:
+            asyncio.run(self._consume_output_events(output_path, process, output_callback))
+        except ProcessEventLagError as e:
+            logger.warning("Application output observer fell behind: %s", e)
+        except Exception:
+            logger.exception("Application output observer failed")
         with self._output_condition:
             self._output_condition.notify_all()
+
+    async def _consume_output_events(
+        self,
+        output_path: Path,
+        process: ManagedProcess,
+        output_callback: Optional[OutputCallback],
+    ) -> None:
+        with output_path.open("w", encoding="utf-8", buffering=1) as output:
+            async for event in process.events():
+                line = self._display_output_event(event)
+                output.write(line)
+                if event.text.endswith(("\n", "\r")):
+                    output.write("\n" if not line.endswith("\n") else "")
+                with self._output_condition:
+                    self._output_lines.append(line.rstrip("\r\n"))
+                    self._output_condition.notify_all()
+                if output_callback:
+                    try:
+                        output_callback(line.rstrip("\r\n"))
+                    except Exception:
+                        logger.exception("Application output callback failed")
+
+    @staticmethod
+    def _display_output_event(event: OutputEvent) -> str:
+        prefix = "[stderr] " if event.stream is OutputStream.STDERR else ""
+        return f"{prefix}{event.text}"
+
+    def _record_result_output(self, result: ManagedProcessResult) -> None:
+        lines = [*result.stdout.splitlines(), *(f"[stderr] {line}" for line in result.stderr.splitlines())]
+        if lines:
+            with self._output_condition:
+                self._output_lines.extend(lines)
+                self._output_condition.notify_all()
 
     def _script_command(self) -> list[str]:
         script_path = self.config.script_path
@@ -264,9 +289,14 @@ class ScriptRunner:
             raise RunnerError("Application process was not started")
 
         time.sleep(grace_seconds)
-        exit_code = self._process.poll()
+        exit_code = self._process.returncode
         if exit_code is None:
             return
+
+        try:
+            self._process.wait(check=False)
+        except ProcessError as e:
+            raise RunnerError(f"Application process cleanup failed: {e}") from e
 
         recent_output = self.recent_output()
         message = (
@@ -312,28 +342,30 @@ class ScriptRunner:
 
         timeout = self.config.init_timeout
         init_message = self.config.init_message
-        next_line = 0
 
         while True:
-            deadline = time.monotonic() + timeout
-            while True:
-                with self._output_condition:
-                    new_lines = self._output_lines[next_line:]
-                    next_line = len(self._output_lines)
-                    if any(init_message in line for line in new_lines):
-                        logger.info(f"Init message received: {init_message}")
-                        return True
-
-                    if self._process.poll() is not None:
-                        logger.error(f"Process exited with code {self._process.returncode} before init message")
-                        raise InitTimeoutError(
-                            f"Process exited (code {self._process.returncode}) before init message was received"
-                        )
-
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    self._output_condition.wait(min(remaining, 0.1))
+            try:
+                self._process.wait_for_line(
+                    lambda event: init_message in event.text,
+                    timeout=timeout,
+                )
+                logger.info(f"Init message received: {init_message}")
+                return True
+            except EOFError:
+                try:
+                    result = self._process.wait(check=False)
+                except ProcessError as e:
+                    raise InitTimeoutError(
+                        f"Application process failed before initialization completed: {e}"
+                    ) from e
+                logger.error(f"Process exited with code {result.returncode} before init message")
+                raise InitTimeoutError(
+                    f"Process exited (code {result.returncode}) before init message was received"
+                )
+            except ProcessLineTimeoutError:
+                pass
+            except ProcessError as e:
+                raise InitTimeoutError(f"Application process failed while waiting for initialization: {e}") from e
 
             logger.warning(f"Init message not received within {timeout} seconds")
 
@@ -357,29 +389,50 @@ class ScriptRunner:
 
     def stop(self) -> None:
         """Stop the running process."""
-        if self._process:
-            logger.info("Stopping process")
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning("Process did not terminate, killing")
-                self._process.kill()
-            if self._reader_thread:
-                self._reader_thread.join(timeout=1)
-                self._reader_thread = None
-            self._process = None
+        if not self._process:
+            return
+
+        logger.info("Stopping process")
+        try:
+            self._process.close()
+        except ProcessError as e:
+            raise RunnerError(f"Failed to clean up application process: {e}") from e
+
+        self._process = None
+        self._join_output_reader()
+
+    def wait_for_exit(self) -> int:
+        """Wait for the managed application and its descendants to exit cleanly."""
+        if not self._process:
+            raise RunnerError("Application process was not started")
+        try:
+            result = self._process.wait(check=False)
+            self._process.close()
+        except ProcessError as e:
+            raise RunnerError(f"Application process supervision failed: {e}") from e
+
+        self._process = None
+        self._join_output_reader()
+        return result.returncode
+
+    def _join_output_reader(self) -> None:
+        if not self._reader_thread:
+            return
+        self._reader_thread.join(timeout=1)
+        if self._reader_thread.is_alive():
+            logger.warning("Application output observer did not stop promptly")
+        self._reader_thread = None
 
     @property
     def is_running(self) -> bool:
         """Check if the process is still running."""
-        return self._process is not None and self._process.poll() is None
+        return self._process is not None and self._process.running
 
     @property
     def return_code(self) -> Optional[int]:
         """Get the process return code, or None if still running."""
         if self._process:
-            return self._process.poll()
+            return self._process.returncode
         return None
 
     @property
