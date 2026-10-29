@@ -88,6 +88,16 @@ def create_build_plan(
 
     config_dir = config_path.parent
     datas = [(config_path.resolve().as_posix(), "packaging/launcher")]
+    # Wetlands copies stdlib-only probe/executor kernels into managed
+    # interpreters. Bytecode in PyInstaller's PYZ cannot supply those files.
+    wetlands_spec = importlib.util.find_spec("wetlands")
+    if wetlands_spec is None or not wetlands_spec.submodule_search_locations:
+        raise BuildCliError("The installed wetlands package is required to build Launcher.")
+    for package_root in wetlands_spec.submodule_search_locations:
+        root = Path(package_root)
+        for source in sorted(root.rglob("*.py")):
+            destination = Path("wetlands") / source.relative_to(root).parent
+            datas.append((source.resolve().as_posix(), destination.as_posix()))
 
     explicit_icon = icon_path is not None
     icon_path = _resolve_icon(icon_path) if icon_path else _find_icon(config_dir)

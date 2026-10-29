@@ -2,6 +2,7 @@
 
 import queue
 import platform
+import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -275,6 +276,11 @@ class TkinterGUI(BaseGUI):
     def _apply_window_icon(self) -> None:
         """Apply the first icon format supported by the current Tk platform."""
         if not self._root:
+            return
+        # A frozen macOS app already has its high-resolution, inset ICNS in
+        # the bundle. Tk cannot read ICNS and would replace it with the
+        # portable PNG, losing the app's macOS-specific canvas margins.
+        if platform.system() == "Darwin" and getattr(sys, "frozen", False):
             return
 
         for icon_path in self._icon_paths:
