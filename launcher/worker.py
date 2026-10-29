@@ -455,6 +455,7 @@ class LauncherWorker:
 
             # Get or create environment
             self._log(f"Setting up environment: {self._config.env_name}")
+            self._progress(0, 0, "Preparing Python environment...")
             env = self._env_manager.get_or_create_environment(self._config)
             self._log("Environment ready")
 
@@ -487,6 +488,7 @@ class LauncherWorker:
 
             # Start the configured entrypoint
             self._log("Starting application...")
+            self._progress(0, 0, "Starting application...")
             process = self._runner.start(output_callback=self._log_application_output)
             process_id = getattr(process, "pid", None)
             if process_id:

@@ -60,3 +60,20 @@ def test_tk_uses_png_fallback_and_keeps_image_reference(tmp_path, monkeypatch):
 
     assert calls == [(True, image)]
     assert gui._icon_image is image
+
+
+def test_frozen_macos_preserves_native_bundle_icon(tmp_path, monkeypatch):
+    """Opening Tk windows must not replace the bundle's inset ICNS with a PNG."""
+    icon = tmp_path / "icon_128x128.png"
+    icon.write_bytes(b"png")
+    gui = TkinterGUI(queue.Queue(), queue.Queue(), "TestApp", [Path("app.icns"), icon])
+    gui._root = cast(Any, object())
+    monkeypatch.setattr(tkinter_gui.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(tkinter_gui.sys, "frozen", True, raising=False)
+
+    def unexpected_photo(**kwargs):
+        raise AssertionError("Frozen macOS launcher must keep its native bundle icon")
+
+    monkeypatch.setattr(tkinter_gui.tk, "PhotoImage", unexpected_photo)
+    gui._apply_window_icon()
+    assert gui._icon_image is None

@@ -292,7 +292,11 @@ def test_build_reports_pyinstaller_failure_with_command(tmp_path, monkeypatch, c
     def fail(command, check):
         raise build_cli.subprocess.CalledProcessError(7, command)
 
-    monkeypatch.setattr(build_cli.importlib.util, "find_spec", lambda name: object())
+    real_find_spec = build_cli.importlib.util.find_spec
+    monkeypatch.setattr(
+        build_cli.importlib.util, "find_spec",
+        lambda name: object() if name == "PyInstaller" else real_find_spec(name),
+    )
     monkeypatch.setattr(build_cli.subprocess, "run", fail)
 
     result = build_cli.main(["--config", str(config)])
@@ -560,3 +564,21 @@ def test_build_upload_failure_leaves_distribution_unchanged(tmp_path, monkeypatc
         build_cli.upload_launcher_package(version="v1.2.3")
 
     assert yaml.safe_load(distribution.read_text()) == {"schema_version": 1, "launcher_downloads": {}}
+
+
+def test_build_includes_wetlands_probe_and_executor_source_files(tmp_path, monkeypatch):
+    """Managed interpreters need physical source kernels outside the PYZ archive."""
+    package = tmp_path / "installed" / "wetlands"
+    kernel = package / "_internal" / "runtime_content.py"
+    kernel.parent.mkdir(parents=True)
+    kernel.write_text("print('runtime probe')\n")
+    executor = package / "module_executor.py"
+    executor.write_text("print('worker')\n")
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        build_cli.importlib.util, "find_spec",
+        lambda name: SimpleNamespace(submodule_search_locations=[str(package)]),
+    )
+    plan = build_cli.create_build_plan(config_path=write_config(tmp_path))
+    assert (str(kernel.resolve()), "wetlands/_internal") in plan.datas
+    assert (str(executor.resolve()), "wetlands") in plan.datas
