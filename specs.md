@@ -309,6 +309,9 @@ When set, the certificate path is:
 
 The launcher should only open a GUI if necessary: to enter the proxy settings or if the application launch time is too long (the launch duration is greater than `timeout`) to show a progress bar and the logs (downloads, installation, env creation, etc. ).
 
+The progress label advances from archive extraction to Python-environment preparation and application startup, using indeterminate progress where no total is known.
+It must not continue to display extraction while dependencies are being installed.
+
 The GUI should be made with Tkinter be default. The issue is that the GUI must run in the main thread. This means there must be two threads: the main one for the GUI, and a second one for everything else. They must communicate: the main GUI provides the proxy settings if required, the other thread tells about the logs / download / loading progress.
 
 Frozen macOS Tk launchers retain the bundle’s native ICNS icon, including its transparent margins and Retina representations.
